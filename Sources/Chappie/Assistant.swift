@@ -70,6 +70,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if Intent.isReminderListRequest(text) { reply(reminderSummary()); return }
         if let draft = Intent.reminderDraft(from: text) { Task { await addReminder(draft) }; return }
         if let term = Intent.fileSearchTerm(text) { searchFiles(term); return }
+        if let edit = Intent.calendarEdit(text) { Task { await applyCalendarEdit(edit) }; return }
         if Intent.isCalendarAddition(text) { Task { await addEvent(text) }; return }
         if Intent.isCalendarLookup(text) { Task { await schedule(text) }; return }
         if Intent.isPurchasableListRequest(text) { reply(purchasableSummary()); return }
@@ -393,6 +394,95 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         guard !upcoming.isEmpty else { return "この先のリマインドはありません。「30分後に電話って教えて」のように頼めます。" }
         let formatter = DateFormatter(); formatter.locale = Locale(identifier: "ja_JP"); formatter.dateFormat = "M/d(E) H:mm"
         return (["この先のリマインドは\(upcoming.count)件です。"] + upcoming.map { "\(formatter.string(from: $0.due))  \($0.title)" }).joined(separator: "\n")
+    }
+
+    private static let eventFormatter: DateFormatter = {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "ja_JP"); formatter.dateFormat = "M/d(E) H:mm"; return formatter
+    }()
+
+    private func describe(_ event: EKEvent) -> String {
+        let when = event.isAllDay ? Self.eventFormatter.string(from: event.startDate).components(separatedBy: " ").first! + " 終日" : Self.eventFormatter.string(from: event.startDate)
+        return "\(when) \(event.title ?? "予定")"
+    }
+
+    /// Moves or deletes one existing event, or lists free time. Only an unambiguous
+    /// match is changed; with several candidates Chappie lists them and asks again.
+    private func applyCalendarEdit(_ edit: Intent.CalendarEdit) async {
+        do {
+            guard try await events.requestFullAccessToEvents() else { reply("カレンダーへのアクセスが未許可です。システム設定から許可してください。"); return }
+            switch edit {
+            case .freeSlots(let start, let end, let label, let minutes):
+                reply(freeSlotSummary(start: start, end: end, label: label, minutes: minutes))
+            case .delete(let target):
+                guard let event = try resolve(target) else { return }
+                let description = describe(event)
+                try events.remove(event, span: .thisEvent, commit: true)
+                reply("「\(description)」をカレンダーから削除しました。")
+            case .move(let target, let newStart):
+                guard let event = try resolve(target) else { return }
+                let before = describe(event)
+                let duration = event.endDate.timeIntervalSince(event.startDate)
+                let calendar = Calendar.current
+                let start: Date
+                switch newStart {
+                case .absolute(let date): start = date
+                case .shift(let seconds): start = event.startDate.addingTimeInterval(seconds)
+                case .timeOnly(let hour, let minute):
+                    start = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: event.startDate) ?? event.startDate
+                case .dayOnly(let day):
+                    let time = calendar.dateComponents([.hour, .minute], from: event.startDate)
+                    start = calendar.date(bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: 0, of: day) ?? day
+                }
+                event.startDate = start
+                event.endDate = start.addingTimeInterval(duration)
+                if case .absolute = newStart { event.isAllDay = false }
+                if case .timeOnly = newStart { event.isAllDay = false }
+                try events.save(event, span: .thisEvent, commit: true)
+                reply("「\(before)」を\(Self.eventFormatter.string(from: start))に変更しました。")
+            }
+        } catch { reply("カレンダーを変更できませんでした: \(error.localizedDescription)") }
+    }
+
+    /// Returns the single event a request points at, or replies with the candidates and returns nil.
+    private func resolve(_ target: Intent.EventTarget) throws -> EKEvent? {
+        let predicate = events.predicateForEvents(withStart: target.windowStart, end: target.windowEnd, calendars: nil)
+        var matches = events.events(matching: predicate)
+            .filter { Intent.eventMatches(title: $0.title ?? "", hint: target.hint) }
+            .sorted { $0.startDate < $1.startDate }
+        if let hour = target.hour { matches = matches.filter { Calendar.current.component(.hour, from: $0.startDate) == hour } }
+        if matches.count == 1 { return matches[0] }
+        if matches.isEmpty {
+            reply(target.hint.isEmpty ? "その期間に予定が見つかりませんでした。" : "「\(target.hint)」に当たる予定が見つかりませんでした。「明日の予定」で一覧を確認できます。")
+            return nil
+        }
+        let rows = matches.prefix(6).map(describe)
+        reply((["該当する予定が\(matches.count)件あります。日時を付けて、どれか教えてください。"] + rows).joined(separator: "\n"))
+        return nil
+    }
+
+    /// Free time between 9:00 and 18:00 on each day of the range, skipping all-day events.
+    private func freeSlotSummary(start: Date, end: Date, label: String, minutes: Int) -> String {
+        let calendar = Calendar.current
+        let now = Date()
+        let busyEvents = events.events(matching: events.predicateForEvents(withStart: start, end: end, calendars: nil)).filter { !$0.isAllDay }
+        var slots: [(Date, Date)] = []
+        var day = calendar.startOfDay(for: start)
+        while day < end, slots.count < 8 {
+            var cursor = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: day)!
+            let close = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: day)!
+            if cursor < now { cursor = max(cursor, calendar.date(byAdding: .minute, value: 15 - (calendar.component(.minute, from: now) % 15), to: now)!) }
+            let todays = busyEvents.filter { $0.endDate > cursor && $0.startDate < close }.sorted { $0.startDate < $1.startDate }
+            for event in todays {
+                if event.startDate.timeIntervalSince(cursor) >= Double(minutes * 60) { slots.append((cursor, event.startDate)) }
+                cursor = max(cursor, event.endDate)
+            }
+            if close.timeIntervalSince(cursor) >= Double(minutes * 60) { slots.append((cursor, close)) }
+            day = calendar.date(byAdding: .day, value: 1, to: day)!
+        }
+        guard !slots.isEmpty else { return "\(label)は9時から18時のあいだに\(minutes)分以上の空きがありません。" }
+        let timeOnly = DateFormatter(); timeOnly.locale = Locale(identifier: "ja_JP"); timeOnly.dateFormat = "H:mm"
+        let rows = slots.prefix(8).map { "\(Self.eventFormatter.string(from: $0.0))〜\(timeOnly.string(from: $0.1))" }
+        return (["\(label)、\(minutes)分以上空いているのは次の時間です（9時〜18時で見ています）。"] + rows).joined(separator: "\n")
     }
 
     /// Adds an event from natural Japanese. Dates are parsed on the Mac; nothing is sent to the AI.

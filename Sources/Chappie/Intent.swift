@@ -382,6 +382,22 @@ enum Intent {
         return change.quantity == nil && change.maxTotalYen == nil ? nil : change
     }
 
+    // MARK: Mail
+
+    enum MailRequest: Equatable { case summary, draft }
+
+    private static let mailWords = ["メール", "めーる", "ジーメール", "gmail", "受信箱", "受信トレイ", "未読", "inbox"]
+    private static let strongDraftWords = ["下書き", "返信して", "返信を", "返事して", "返事を書", "メールして", "メールを書", "メールで伝え", "メールで連絡", "メールで送"]
+    private static let softDraftWords = ["書いて", "送って", "連絡して", "伝えて", "お礼", "断って", "お断り", "催促", "依頼して", "返信"]
+
+    /// "未読メールを要約して" → summary; "田中さんに遅れると下書きして" → draft. Sending is never an option.
+    static func mailRequest(_ text: String) -> MailRequest? {
+        let lowered = text.lowercased()
+        if strongDraftWords.contains(where: lowered.contains) { return .draft }
+        guard mailWords.contains(where: lowered.contains) else { return nil }
+        return softDraftWords.contains(where: lowered.contains) ? .draft : .summary
+    }
+
     // MARK: Files
 
     /// Returns the name to look for, or nil when the sentence is not a file search.

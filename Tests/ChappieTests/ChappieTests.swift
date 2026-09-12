@@ -22,7 +22,8 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         tests.testRemoveRule()
         tests.testReminderDrafts()
         tests.testCalendarEdits()
-        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits")
+        tests.testMailRequests()
+        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail")
     }
     func testWakeAndSameUtterance() {
         XCTAssertEqual(WakePhrase.command(in: "ねえチャッピー、今日の予定"), "今日の予定")
@@ -274,5 +275,16 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         XCTAssertTrue(Intent.eventMatches(title: "田中さん 会食", hint: "田中さんとの会食"))
         XCTAssertTrue(Intent.eventMatches(title: "週次定例MTG", hint: "定例"))
         XCTAssertFalse(Intent.eventMatches(title: "歯医者", hint: "会議"))
+    }
+    func testMailRequests() {
+        XCTAssertEqual(Intent.mailRequest("未読メールを要約して"), .summary)
+        XCTAssertEqual(Intent.mailRequest("Gmailに何か来てる？"), .summary)
+        XCTAssertEqual(Intent.mailRequest("ジーメール確認して"), .summary)
+        XCTAssertEqual(Intent.mailRequest("田中さんに10分遅れると連絡を下書きして"), .draft)
+        XCTAssertEqual(Intent.mailRequest("佐藤さんのメールに返信して、来週なら大丈夫と伝えて"), .draft)
+        XCTAssertEqual(Intent.mailRequest("山田さんにお礼のメールを書いて"), .draft)
+        XCTAssertNil(Intent.mailRequest("今日の予定"))
+        XCTAssertNil(Intent.mailRequest("シャンプー買って"))
+        XCTAssertNil(Intent.mailRequest("田中さんに電話するのを30分後に教えて"))
     }
 }

@@ -43,6 +43,8 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
   - 「何が買える？」と、登録に無い商品の購入依頼には登録商品一覧を返す
   - 一般質問のプロンプトを秘書仕様に（旅行・外出は案2〜3件＋次の判断を1つ質問、読み上げ向けに短く）
 - `Chappie --ask "文"` で1問だけ答えて終了するデバッグモード
+- リマインド（`Intent.reminderDraft`）：相対時間「30分後」「あと10分」はMac内で計算、絶対時刻はNSDataDetector。時刻なしは9:00。`Assistant.addReminder`がUserDefaults（`chappieReminders`）に保存し、20秒ごとの`startReminderClock`で期限到来を読み上げ。同時にEKReminder（アラーム付き）を既定リストへ保存してiPhone/Watchに届ける。1時間以上前に過ぎたものは読み上げない
+- 一般質問の子プロセスは `--strict-mcp-config --mcp-config {空}` でユーザーのclaude.aiコネクター（Google Calendar・Gmail等）を隠す。予定・リマインドはApple製アプリのみ、と本文プロンプトにも明記
 - 会話で商品を登録・変更・削除（`Intent.registrationRequest / ruleChange / isRemovalRequest`）。URLを含む文だけが登録扱いなので音声からは発生しない。既存の同名商品は更新し、酒類の手動レジ設定は引き継ぐ。設定画面にも削除ボタン
 
 ## 2026-09-12の実地確認

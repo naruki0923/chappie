@@ -7,11 +7,12 @@
 <key>CFBundleIconFile</key><string>Chappie</string>
 <key>CFBundleExecutable</key><string>Chappie</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.5.0</string>
-<key>CFBundleVersion</key><string>11</string>
+<key>CFBundleShortVersionString</key><string>0.6.0</string>
+<key>CFBundleVersion</key><string>12</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSUIElement</key><true/>
 <key>NSMicrophoneUsageDescription</key><string>「チャッピー」の呼びかけと、その後の質問を聞き取ります。</string>
 <key>NSSpeechRecognitionUsageDescription</key><string>呼びかけと質問を、このMac内で文字に変換します。</string>
 <key>NSCalendarsFullAccessUsageDescription</key><string>予定を確認してお伝えし、頼まれた予定を追加します。既存の予定の変更・削除は行いません。</string>
+<key>NSRemindersFullAccessUsageDescription</key><string>頼まれたリマインドをAppleリマインダーに登録し、iPhoneやApple Watchにも届くようにします。</string>
 </dict></plist>

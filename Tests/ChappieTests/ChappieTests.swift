@@ -20,7 +20,8 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         tests.testRegistrationByChat()
         tests.testRuleChangeAndRemoval()
         tests.testRemoveRule()
-        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration")
+        tests.testReminderDrafts()
+        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders")
     }
     func testWakeAndSameUtterance() {
         XCTAssertEqual(WakePhrase.command(in: "ねえチャッピー、今日の予定"), "今日の予定")
@@ -76,7 +77,7 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         XCTAssertFalse(Intent.isAffirmative(""))
     }
     func testCalendarRouting() {
-        for lookup in ["今日の予定", "明日の予定を教えて", "今週の予定は？", "カレンダー見せて", "来週空いてる？"] {
+        for lookup in ["今日の予定", "明日の予定を教えて", "今週の予定は？", "カレンダー見せて", "来週空いてる？", "予定を調べて", "Appleカレンダーと連携できてる？"] {
             XCTAssertTrue(Intent.isCalendarLookup(lookup))
             XCTAssertFalse(Intent.isCalendarAddition(lookup))
         }
@@ -196,5 +197,37 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         XCTAssertNil(store.save(rule))
         store.remove(rule)
         XCTAssertEqual(store.products.count, 0)
+    }
+    func testReminderDrafts() {
+        let now = Date()
+        let calendar = Calendar.current
+        let call = Intent.reminderDraft(from: "30分後に電話するのを教えて", now: now, calendar: calendar)
+        XCTAssertEqual(call?.title, "電話")
+        XCTAssertEqual(call.map { Int($0.due.timeIntervalSince(now).rounded()) }, 1800)
+
+        let soon = Intent.reminderDraft(from: "あと10分で会議って教えて", now: now, calendar: calendar)
+        XCTAssertEqual(soon?.title, "会議")
+        XCTAssertEqual(soon.map { Int($0.due.timeIntervalSince(now).rounded()) }, 600)
+
+        let rest = Intent.reminderDraft(from: "1時間後に休憩", now: now, calendar: calendar)
+        XCTAssertEqual(rest?.title, "休憩")
+
+        let transfer = Intent.reminderDraft(from: "金曜に振込をリマインドして", now: now, calendar: calendar)
+        XCTAssertEqual(transfer?.title, "振込")
+        XCTAssertEqual(transfer.map { calendar.component(.weekday, from: $0.due) }, 6)
+        XCTAssertEqual(transfer.map { calendar.component(.hour, from: $0.due) }, 9)
+
+        let leave = Intent.reminderDraft(from: "18時になったら帰る準備を知らせて", now: now, calendar: calendar)
+        XCTAssertEqual(leave?.title, "帰る準備")
+        XCTAssertEqual(leave.map { calendar.component(.hour, from: $0.due) }, 18)
+
+        let medicine = Intent.reminderDraft(from: "明日の朝、薬を飲むのを思い出させて", now: now, calendar: calendar)
+        XCTAssertEqual(medicine?.title, "薬を飲む")
+
+        XCTAssertNil(Intent.reminderDraft(from: "今日の予定を教えて", now: now, calendar: calendar))
+        XCTAssertNil(Intent.reminderDraft(from: "明日15時に会議を入れて", now: now, calendar: calendar))
+        XCTAssertNil(Intent.reminderDraft(from: "シャンプー買って", now: now, calendar: calendar))
+        XCTAssertTrue(Intent.isReminderListRequest("リマインドの一覧を見せて"))
+        XCTAssertFalse(Intent.isReminderListRequest("30分後にリマインドして"))
     }
 }

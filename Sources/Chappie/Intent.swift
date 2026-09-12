@@ -150,6 +150,73 @@ enum Intent {
         return EventDraft(title: title, start: allDay ? calendar.startOfDay(for: start) : start, end: end, allDay: allDay)
     }
 
+    // MARK: Product registration
+
+    struct RegistrationDraft: Equatable {
+        var name: String
+        var url: URL
+        var quantity: Int
+        var maxTotalYen: Int
+    }
+
+    struct RuleChange: Equatable {
+        var quantity: Int?
+        var maxTotalYen: Int?
+    }
+
+    private static let registrationWords = ["登録して", "登録しといて", "登録しておいて", "登録お願い", "覚えて", "覚えといて", "覚えておいて", "追加して", "追加しといて", "買えるようにして", "登録"]
+    private static let removalWords = ["登録から外して", "登録から消して", "登録を外して", "登録を消して", "登録解除", "登録から削除", "削除して", "消して", "外して", "買えなくして"]
+
+    /// "このURLをシャンプーとして登録して https://…" → name, url, and optional "2個" / "上限3000円".
+    /// Only typed requests carry a URL, so voice never reaches this path by accident.
+    static func registrationRequest(_ text: String) -> RegistrationDraft? {
+        guard let urlRange = text.range(of: #"https?://[^\s　、。「」]+"#, options: .regularExpression),
+              let url = URL(string: String(text[urlRange])) else { return nil }
+        var rest = text.replacingCharacters(in: urlRange, with: " ")
+        guard registrationWords.contains(where: rest.contains) else { return nil }
+
+        var quantity = 1
+        if let match = rest.range(of: #"(\d+)\s*(個|本|袋|箱|セット|つ)"#, options: .regularExpression) {
+            quantity = Int(rest[match].filter(\.isNumber)) ?? 1
+            rest.replaceSubrange(match, with: " ")
+        }
+        var limit = 0
+        if let match = rest.range(of: #"(上限|最大|予算)?\s*(\d[\d,]*)\s*円\s*(まで|以内|以下)?"#, options: .regularExpression) {
+            limit = Int(rest[match].filter(\.isNumber)) ?? 0
+            rest.replaceSubrange(match, with: " ")
+        }
+
+        let noise = registrationWords + ["この商品", "このURL", "このリンク", "この", "これ", "商品", "URL", "リンク", "として", "という名前で", "の名前で", "呼び名", "名前は", "名前", "上限", "ください", "お願い", "っていう", "って", "ね", "よ"]
+        var name = rest
+        for word in noise.sorted(by: { $0.count > $1.count }) { name = name.replacingOccurrences(of: word, with: " ") }
+        name = name.replacingOccurrences(of: #"[、。,.:：「」()（）]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        name = name.replacingOccurrences(of: #"^(を|は|で|に|と|の|も)\s*"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s*(を|は|で|に|と|の|も)$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return RegistrationDraft(name: name, url: url, quantity: quantity, maxTotalYen: limit)
+    }
+
+    static func isRemovalRequest(_ text: String) -> Bool {
+        removalWords.contains(where: text.contains)
+    }
+
+    /// "シャンプーは2個にして" / "上限を2000円にして" / "上限なしにして". Nil when nothing changes.
+    static func ruleChange(_ text: String) -> RuleChange? {
+        guard ["にして", "に変えて", "に変更", "に設定", "にしといて", "に増やして", "に減らして"].contains(where: text.contains) else { return nil }
+        var change = RuleChange()
+        if let match = text.range(of: #"(\d+)\s*(個|本|袋|箱|セット|つ)"#, options: .regularExpression) {
+            change.quantity = Int(text[match].filter(\.isNumber))
+        }
+        if text.contains("上限なし") || text.contains("上限無し") || text.contains("都度確認") {
+            change.maxTotalYen = 0
+        } else if let match = text.range(of: #"(\d[\d,]*)\s*円"#, options: .regularExpression) {
+            change.maxTotalYen = Int(text[match].filter(\.isNumber))
+        }
+        return change.quantity == nil && change.maxTotalYen == nil ? nil : change
+    }
+
     // MARK: Files
 
     /// Returns the name to look for, or nil when the sentence is not a file search.

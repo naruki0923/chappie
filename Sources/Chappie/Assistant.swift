@@ -65,10 +65,22 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             }
             return
         }
+        if let draft = Intent.registrationRequest(text) { registerProduct(draft); return }
         if let term = Intent.fileSearchTerm(text) { searchFiles(term); return }
         if Intent.isCalendarAddition(text) { Task { await addEvent(text) }; return }
         if Intent.isCalendarLookup(text) { Task { await schedule(text) }; return }
         if Intent.isPurchasableListRequest(text) { reply(purchasableSummary()); return }
+        if Intent.isRemovalRequest(text), let rule = ProductNameMatcher.bestMatch(command: text, products: connections.products) {
+            connections.remove(rule)
+            reply("\(rule.name)を買える商品から外しました。残りは\(connections.products.count)点です。"); return
+        }
+        if let change = Intent.ruleChange(text), var rule = ProductNameMatcher.bestMatch(command: text, products: connections.products) {
+            if let quantity = change.quantity { rule.quantity = quantity }
+            if let limit = change.maxTotalYen { rule.maxTotalYen = limit }
+            if let error = connections.save(rule) { reply("変更できませんでした。\(error)") }
+            else { reply("\(rule.name)を\(ruleDescription(rule))に変更しました。") }
+            return
+        }
         let purchase = Intent.purchaseIntent(text)
         if purchase != .none, let rule = ProductNameMatcher.bestMatch(command: text, products: connections.products) {
             quotePurchase(rule); return
@@ -79,6 +91,24 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             reply("注文・売上のデータ接続はまだ設定されていません。利用する店舗・管理サービスが決まったら接続できます。現在の数値や注文状況は取得できません。"); return
         }
         research(text)
+    }
+
+    private func ruleDescription(_ rule: PurchaseRule) -> String {
+        "数量\(rule.quantity)、" + (rule.maxTotalYen == 0 ? "上限なし（購入時に価格確認）" : "送料込み上限¥\(rule.maxTotalYen.formatted())")
+    }
+
+    /// Registers a product from a pasted URL. Nothing is bought here; the rule only
+    /// makes "\(name)買って" possible, and every purchase still stops at the price check.
+    private func registerProduct(_ draft: Intent.RegistrationDraft) {
+        guard !draft.name.isEmpty else {
+            reply("呼び名を教えてください。「このURLをシャンプーとして登録して」のように言ってください。"); return
+        }
+        let existing = connections.products.first { $0.name == draft.name }
+        let rule = PurchaseRule(name: draft.name, url: draft.url, quantity: draft.quantity, maxTotalYen: draft.maxTotalYen,
+                                manualCheckoutOnly: existing?.manualCheckoutOnly)
+        if let error = connections.save(rule) { reply("登録できませんでした。\(error)"); return }
+        let verb = existing == nil ? "登録しました" : "更新しました"
+        reply("\(rule.name)を\(ruleDescription(rule))で\(verb)。「\(rule.name)買って」で、金額を確認してから注文できます。")
     }
 
     private func purchasableSummary() -> String {

@@ -119,6 +119,11 @@ final class Connections: ObservableObject {
         return nil
     }
 
+    func remove(_ rule: PurchaseRule) {
+        products.removeAll { $0.id == rule.id }
+        if let data = try? JSONEncoder().encode(products) { defaults.set(data, forKey: "purchaseRules") }
+    }
+
     func lastPurchased(_ rule: PurchaseRule) -> Date? {
         let timestamp = defaults.double(forKey: "lastPurchase.\(rule.id.uuidString)")
         return timestamp > 0 ? Date(timeIntervalSince1970: timestamp) : nil

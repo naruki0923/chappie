@@ -17,7 +17,10 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         tests.testEventDraft()
         tests.testFileAndOtherRouting()
         tests.testSavePreservesRuleID()
-        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts")
+        tests.testRegistrationByChat()
+        tests.testRuleChangeAndRemoval()
+        tests.testRemoveRule()
+        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration")
     }
     func testWakeAndSameUtterance() {
         XCTAssertEqual(WakePhrase.command(in: "ねえチャッピー、今日の予定"), "今日の予定")
@@ -154,5 +157,44 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         XCTAssertEqual(store.products.count, 1)
         XCTAssertEqual(store.products[0].id, first.id)
         XCTAssertEqual(store.products[0].quantity, 2)
+    }
+    func testRegistrationByChat() {
+        let link = "https://www.amazon.co.jp/dp/B0FS22VBRJ?ref=ppx_yo2ov_dt_b_fed_asin_title&th=1"
+        let basic = Intent.registrationRequest("このURLをシャンプーとして登録して \(link)")
+        XCTAssertEqual(basic?.name, "シャンプー")
+        XCTAssertEqual(basic?.url.absoluteString, link)
+        XCTAssertEqual(basic?.quantity, 1)
+        XCTAssertEqual(basic?.maxTotalYen, 0)
+
+        let detailed = Intent.registrationRequest("\(link) これを洗濯洗剤で登録、2個、上限3,000円まで")
+        XCTAssertEqual(detailed?.name, "洗濯洗剤")
+        XCTAssertEqual(detailed?.quantity, 2)
+        XCTAssertEqual(detailed?.maxTotalYen, 3000)
+
+        let remembered = Intent.registrationRequest(WakePhrase.command(in: "チャッピー、\(link) はトリートメントって覚えて")!)
+        XCTAssertEqual(remembered?.name, "トリートメント")
+
+        XCTAssertEqual(Intent.registrationRequest("\(link) 登録して")?.name, "")
+        XCTAssertNil(Intent.registrationRequest("シャンプーを登録して"))
+        XCTAssertNil(Intent.registrationRequest("\(link) この商品の価格を調べて"))
+        XCTAssertNil(Intent.registrationRequest("明日15時に会議を登録して"))
+    }
+    func testRuleChangeAndRemoval() {
+        XCTAssertEqual(Intent.ruleChange("シャンプーは2個にして"), Intent.RuleChange(quantity: 2, maxTotalYen: nil))
+        XCTAssertEqual(Intent.ruleChange("シャンプーの上限を2,000円にして"), Intent.RuleChange(quantity: nil, maxTotalYen: 2000))
+        XCTAssertEqual(Intent.ruleChange("柔軟剤は上限なしにして"), Intent.RuleChange(quantity: nil, maxTotalYen: 0))
+        XCTAssertNil(Intent.ruleChange("シャンプー買って"))
+        XCTAssertNil(Intent.ruleChange("明日15時にして"))
+        XCTAssertTrue(Intent.isRemovalRequest("ウイスキーは登録から外して"))
+        XCTAssertTrue(Intent.isRemovalRequest("ウイスキー削除して"))
+        XCTAssertFalse(Intent.isRemovalRequest("ウイスキー買って"))
+        XCTAssertTrue(ProductNameMatcher.matches(command: "ウイスキーは登録から外して", productName: "ウイスキー"))
+    }
+    @MainActor func testRemoveRule() {
+        let store = Connections(defaults: UserDefaults(suiteName: "local.chappie.tests.\(UUID().uuidString)")!)
+        let rule = PurchaseRule(name: "シャンプー", url: URL(string: "https://www.amazon.co.jp/dp/EXAMPLE")!, quantity: 1, maxTotalYen: 0)
+        XCTAssertNil(store.save(rule))
+        store.remove(rule)
+        XCTAssertEqual(store.products.count, 0)
     }
 }

@@ -23,7 +23,8 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         tests.testReminderDrafts()
         tests.testCalendarEdits()
         tests.testMailRequests()
-        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail")
+        tests.testBooking()
+        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking")
     }
     func testWakeAndSameUtterance() {
         XCTAssertEqual(WakePhrase.command(in: "ねえチャッピー、今日の予定"), "今日の予定")
@@ -286,5 +287,35 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         XCTAssertNil(Intent.mailRequest("今日の予定"))
         XCTAssertNil(Intent.mailRequest("シャンプー買って"))
         XCTAssertNil(Intent.mailRequest("田中さんに電話するのを30分後に教えて"))
+    }
+    func testBooking() {
+        for text in ["20日の東京から新大阪の新幹線を取って", "その案で予約して", "沖縄のホテルを20日から22日で2人予約して", "渋谷で金曜19時に4人の店を予約したい", "飛行機を手配して"] {
+            XCTAssertTrue(Intent.isBookingRequest(text))
+        }
+        for text in ["予約の確認", "シャンプー買って", "明日15時に会議を入れて", "旅行のプランを考えて"] {
+            XCTAssertFalse(Intent.isBookingRequest(text))
+        }
+        let train = BookingPlan.parse("""
+        {"kind":"train","origin":"東京","destination":"新大阪","area":null,"keyword":null,"date":"2026-09-20","time":"09:00","checkin":null,"checkout":null,"guests":null,"missing":[]}
+        """)
+        XCTAssertEqual(train?.kind, .train)
+        XCTAssertEqual(train?.searchURL?.host, "transit.yahoo.co.jp")
+        XCTAssertTrue(train?.searchURL?.query?.contains("y=2026&m=09&d=20") == true)
+        XCTAssertTrue(train?.searchURL?.query?.contains("hh=9&m1=0&m2=0") == true)
+        XCTAssertEqual(train?.summary, "新幹線・電車：東京→新大阪、9月20日 09:00")
+
+        let hotel = BookingPlan.parse("結果です。```json\n{\"kind\":\"hotel\",\"area\":\"沖縄\",\"keyword\":\"海沿い\",\"checkin\":\"2026-09-20\",\"checkout\":\"2026-09-22\",\"guests\":2,\"missing\":[]}\n```")
+        XCTAssertEqual(hotel?.kind, .hotel)
+        XCTAssertEqual(hotel?.searchURL?.host, "www.booking.com")
+        XCTAssertTrue(hotel?.searchURL?.query?.contains("checkin=2026-09-20&checkout=2026-09-22&group_adults=2") == true)
+
+        let restaurant = BookingPlan.parse("{\"kind\":\"restaurant\",\"area\":\"渋谷\",\"keyword\":\"焼肉\",\"date\":\"2026-09-18\",\"time\":\"19:00\",\"guests\":4,\"missing\":[]}")
+        XCTAssertEqual(restaurant?.searchURL?.host, "tabelog.com")
+        XCTAssertTrue(restaurant?.searchURL?.query?.contains("svd=20260918&svt=1900&svps=4") == true)
+
+        let incomplete = BookingPlan.parse("{\"kind\":\"hotel\",\"area\":\"沖縄\",\"missing\":[\"チェックイン日\",\"チェックアウト日\"]}")
+        XCTAssertNil(incomplete?.searchURL)
+        XCTAssertEqual(incomplete?.missing.count, 2)
+        XCTAssertNil(BookingPlan.parse("分かりません"))
     }
 }

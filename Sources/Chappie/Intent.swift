@@ -382,6 +382,19 @@ enum Intent {
         return change.quantity == nil && change.maxTotalYen == nil ? nil : change
     }
 
+    // MARK: Booking
+
+    private static let bookingWords = ["予約して", "予約したい", "予約お願い", "予約を", "予約ページ", "予約サイト", "取って", "取っといて", "手配して", "押さえといて", "抑えて", "予約"]
+    private static let travelNouns = ["新幹線", "特急", "電車", "飛行機", "航空券", "フライト", "便", "ホテル", "宿", "旅館", "民宿", "レストラン", "お店", "店", "居酒屋", "会食", "ランチ", "ディナー", "食事", "席", "旅行", "出張", "その案", "この案", "そのプラン", "このプラン", "それで"]
+
+    /// "20日の東京→新大阪の新幹線を取って" / "その案で予約して". The details come from the
+    /// conversation via the child Claude; this only decides that a booking is wanted.
+    static func isBookingRequest(_ text: String) -> Bool {
+        guard bookingWords.contains(where: text.contains) else { return false }
+        // "予約" alone also appears in "予約の確認" and "予約リスト"; require something bookable.
+        return travelNouns.contains(where: text.contains) || text.contains("予約して") || text.contains("予約したい") || text.contains("手配して")
+    }
+
     // MARK: Mail
 
     enum MailRequest: Equatable { case summary, draft }

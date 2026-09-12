@@ -17,7 +17,7 @@ struct ConnectionView: View {
             TextField("呼び名（例：シャンプー）", text: $name)
             TextField("Amazon / TikTokの商品URL", text: $link)
             HStack { TextField("数量", text: $quantity); TextField("上限（0＝都度確認）", text: $limit) }
-            Text("通常購入のみ。購入前に金額を読み上げて確認し、同じ商品の再購入は24時間以上あけます。")
+            Text("通常購入のみ。購入前に金額を読み上げて確認し、同じ商品の再購入は24時間以上あけます。会話でも「このURLをシャンプーとして登録して」で登録できます。")
                 .font(.caption).foregroundStyle(.secondary)
             Button("Amazonを開く・ログイン") {
                 AmazonSessionWindowController.shared.show(URL(string: "https://www.amazon.co.jp/")!)
@@ -29,11 +29,15 @@ struct ConnectionView: View {
             Text(message).font(.caption)
             ScrollView {
                 ForEach(store.products) { rule in
-                    VStack(alignment: .leading) {
-                        Text(rule.maxTotalYen == 0
-                             ? "\(rule.name) ×\(rule.quantity) / 購入時に価格確認"
-                             : "\(rule.name) ×\(rule.quantity) / 上限 ¥\(rule.maxTotalYen)")
-                        Link("商品ページ", destination: rule.url)
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading) {
+                            Text(rule.maxTotalYen == 0
+                                 ? "\(rule.name) ×\(rule.quantity) / 購入時に価格確認"
+                                 : "\(rule.name) ×\(rule.quantity) / 上限 ¥\(rule.maxTotalYen)")
+                            Link("商品ページ", destination: rule.url)
+                        }
+                        Spacer()
+                        Button("削除") { store.remove(rule) }.font(.caption)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
                 }
             }

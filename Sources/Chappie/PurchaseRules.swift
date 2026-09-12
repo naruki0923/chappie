@@ -2,15 +2,57 @@ import Foundation
 
 enum ProductNameMatcher {
     static func matches(command: String, productName: String) -> Bool {
-        normalize(command).contains(normalize(productName))
+        score(command: command, productName: productName) != nil
+    }
+
+    static func bestMatch(command: String, products: [PurchaseRule]) -> PurchaseRule? {
+        products.compactMap { rule in
+            score(command: command, productName: rule.name).map { (rule, $0) }
+        }.min { $0.1 < $1.1 }?.0
+    }
+
+    private static func score(command: String, productName: String) -> Int? {
+        let fullCommand = normalize(command)
+        let name = normalize(productName)
+        if fullCommand.contains(name) { return 0 }
+
+        let spokenName = purchaseWords.reduce(fullCommand) { value, word in
+            value.replacingOccurrences(of: word, with: "")
+        }
+        guard name.count >= 3, !spokenName.isEmpty else { return nil }
+        let distance = editDistance(spokenName, name)
+        let allowed = name.count >= 6 ? 2 : 1
+        return distance <= allowed ? distance + 1 : nil
     }
 
     private static func normalize(_ value: String) -> String {
-        value.lowercased()
+        (value.applyingTransform(.hiraganaToKatakana, reverse: false) ?? value).lowercased()
             .replacingOccurrences(of: " ", with: "")
             .replacingOccurrences(of: "　", with: "")
+            .replacingOccurrences(of: "ー", with: "")
             // Keep the existing CSV typo compatible with the usual pronunciation.
             .replacingOccurrences(of: "ディヒューザー", with: "ディフューザー")
+    }
+
+    private static let purchaseWords = [
+        "購入してください", "購入して", "購入", "注文してください", "注文して", "注文",
+        "買ってください", "買って", "買いたい", "頼んで", "お願い", "ください", "欲しい",
+        "ホシイ", "一個", "1個", "ヒトツ", "一ツ", "ヲ"
+    ].map { normalize($0) }
+
+    private static func editDistance(_ lhs: String, _ rhs: String) -> Int {
+        let a = Array(lhs), b = Array(rhs)
+        var previous = Array(0...b.count)
+        for (i, left) in a.enumerated() {
+            var current = [i + 1]
+            for (j, right) in b.enumerated() {
+                current.append(min(current[j] + 1,
+                                   previous[j + 1] + 1,
+                                   previous[j] + (left == right ? 0 : 1)))
+            }
+            previous = current
+        }
+        return previous[b.count]
     }
 }
 

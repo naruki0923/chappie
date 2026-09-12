@@ -39,6 +39,8 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
     func testProductNameMatching() {
         XCTAssertTrue(ProductNameMatcher.matches(command: "ディフューザー買って", productName: "ディヒューザー"))
         XCTAssertTrue(ProductNameMatcher.matches(command: "ディフューザーを購入して", productName: "ディフューザー"))
+        XCTAssertTrue(ProductNameMatcher.matches(command: "しゃんぷ注文して", productName: "シャンプー"))
+        XCTAssertTrue(ProductNameMatcher.matches(command: "ヘアーオイルお願い", productName: "ヘアオイル"))
         XCTAssertFalse(ProductNameMatcher.matches(command: "シャンプー買って", productName: "ディフューザー"))
     }
 }

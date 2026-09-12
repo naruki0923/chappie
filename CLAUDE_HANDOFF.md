@@ -43,6 +43,7 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
   - 「何が買える？」と、登録に無い商品の購入依頼には登録商品一覧を返す
   - 一般質問のプロンプトを秘書仕様に（旅行・外出は案2〜3件＋次の判断を1つ質問、読み上げ向けに短く）
 - `Chappie --ask "文"` で1問だけ答えて終了するデバッグモード
+- 予約の段取り（`Intent.isBookingRequest` → `Assistant.booking`）：子Claude（MCPなし・ツールなし）に直近の会話込みで条件JSONを出させ、`BookingPlan.searchURL`（Yahoo!乗換案内／Googleフライト／Booking.com／食べログ、条件はURLパラメータ）を `BookingWindowController`（Amazonとは別窓「チャッピー — 予約」）に開く。必須項目が欠ければ開かずに聞き返す。DOM操作はしない
 - Gmail（`Intent.mailRequest` → `Assistant.research(text, mail:)`）：メールの依頼だけ `--strict-mcp-config` を外し、`--allowedTools` にGmailの search/get（要約）＋ create_draft/list/get/update_draft（下書き）だけを渡す。send/reply/forward/trash/label系は `--disallowedTools` で明示禁止。宛先が見つからなければ下書きを作らず聞き返す
 - 予定の変更・削除・空き時間（`Intent.calendarEdit`）：「を」の左を対象（日付語で検索範囲、残りを題名ヒント、「10時の」で開始時刻を絞る）、右を新しい日時（絶対／時刻のみ／日付のみ／「30分後ろ」の相対）。`Assistant.resolve`が1件に絞れたときだけ変更・削除し、複数なら候補を返す。空き時間は9〜18時で既定60分
 - リマインド（`Intent.reminderDraft`）：相対時間「30分後」「あと10分」はMac内で計算、絶対時刻はNSDataDetector。時刻なしは9:00。`Assistant.addReminder`がUserDefaults（`chappieReminders`）に保存し、20秒ごとの`startReminderClock`で期限到来を読み上げ。同時にEKReminder（アラーム付き）を既定リストへ保存してiPhone/Watchに届ける。1時間以上前に過ぎたものは読み上げない
@@ -84,7 +85,7 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
 3. 商品登録の確認（会話での登録・変更・削除は実装済み）
    - CSVの全行が取り込まれたか、重複・引用符・カンマを含むCSVにも対応する。
    - 現在の簡易CSVパーサーは、商品名内のカンマを扱えません。
-4. TikTok Shop購入を接続
+4. TikTok Shop購入を接続（予約サイトのDOM操作による「フォーム自動入力」も未実装。現状はURLパラメータで検索結果まで）
 5. 売上サービスを確定して今日の売上と注文状況を接続
 6. ユーザー指定note URLを登録し、競艇予想の質問で参照する
 

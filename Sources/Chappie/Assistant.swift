@@ -13,7 +13,7 @@ private struct PendingPurchase {
 @MainActor
 final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var input = ""
-    @Published var answer = "こんにちは、チャッピーです。\n予定の確認と追加、登録商品の購入、旅行や外出のプラン提案、調べもの、ファイル探しを手伝います。"
+    @Published var answer = "こんにちは、チャッピーです。\n予定の確認・追加・変更、リマインド、登録商品の購入、旅行や会食のプラン提案と予約の段取り、Gmailの確認と下書き、調べもの、ファイル探しを手伝います。"
     @Published var busy = false
     @Published var files: [FileHit] = []
     @Published var readAloud = true
@@ -70,6 +70,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if Intent.isReminderListRequest(text) { reply(reminderSummary()); return }
         if let draft = Intent.reminderDraft(from: text) { Task { await addReminder(draft) }; return }
         if let mail = Intent.mailRequest(text) { research(text, mail: mail); return }
+        if Intent.isBookingRequest(text) { booking(text); return }
         if let term = Intent.fileSearchTerm(text) { searchFiles(term); return }
         if let edit = Intent.calendarEdit(text) { Task { await applyCalendarEdit(edit) }; return }
         if Intent.isCalendarAddition(text) { Task { await addEvent(text) }; return }
@@ -215,7 +216,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         ・予想用note：\(note)
         ・TikTok Shop購入：未接続
         ・売上サービス：未接続
-        ファイル検索、旅行・出張・会食のプラン提案、一般質問、Web調査、価格調査にも対応しています。
+        ファイル検索、旅行・出張・会食のプラン提案と予約の段取り（支払い前まで）、Gmailの未読要約と下書き、リマインド、一般質問、Web調査、価格調査にも対応しています。
         """
     }
 
@@ -541,6 +542,84 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if let observer = queryObserver { NotificationCenter.default.removeObserver(observer) }
         queryObserver = nil
     }
+    // MARK: Booking
+
+    /// Asks the child Claude for the booking conditions as JSON (using the recent
+    /// conversation, so "その案で予約して" works), then opens a pre-filled search page.
+    /// Chappie stops there: choosing, paying and confirming are the user's.
+    private func booking(_ text: String) {
+        guard case .claude(let binary)? = Self.conversationBackend else {
+            reply("予約の段取りにはログイン済みのClaude Code CLIが必要です。"); return
+        }
+        busy = true; voice.suppressed = true; answer = "予約の条件を整理しています…"
+        let id = UUID(); runID = id
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("chappie-\(id.uuidString)")
+        let output = folder.appendingPathComponent("plan.txt")
+        do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        catch { reply(error.localizedDescription); return }
+        let mcpConfig = folder.appendingPathComponent("mcp.json")
+        try? Data("{\"mcpServers\":{}}".utf8).write(to: mcpConfig)
+        FileManager.default.createFile(atPath: output.path, contents: nil)
+        let handle = try? FileHandle(forWritingTo: output)
+        let job = Process(); process = job
+        job.currentDirectoryURL = folder
+        job.executableURL = URL(fileURLWithPath: binary)
+        job.arguments = ["-p", "--no-session-persistence", "--permission-mode", "dontAsk",
+                         "--strict-mcp-config", "--mcp-config", mcpConfig.path, "--allowedTools", ""]
+        job.standardOutput = handle ?? FileHandle.nullDevice
+        job.standardError = FileHandle.nullDevice
+        let stdin = Pipe(); job.standardInput = stdin
+        let recentConversation = conversation.suffix(10).map { "\($0.role): \($0.text)" }.joined(separator: "\n")
+        let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd (EEEE)"; formatter.locale = Locale(identifier: "ja_JP")
+        let prompt = """
+        あなたは秘書アシスタントの内部処理です。ユーザーの予約依頼と直近の会話から、予約サイトを開くための条件をJSONだけで出力してください。説明文やコードフェンスは不要です。
+        今日は \(formatter.string(from: Date())) です。「来週金曜」「20日」などは今日を基準に YYYY-MM-DD に直してください。時刻は HH:mm。
+        直前の会話で提案した案（行き先・日程・人数）を、ユーザーが「その案で」「それで」と指せば採用します。会話に無い情報は推測せず null にし、missing に日本語で列挙します。
+        JSONの形（値が無いキーは null）:
+        {"kind":"train|flight|hotel|restaurant|unknown","origin":出発地,"destination":到着地,"area":エリア（宿・店）,"keyword":ジャンルや希望（例 焼肉・温泉・和食）,"date":"YYYY-MM-DD","time":"HH:mm","checkin":"YYYY-MM-DD","checkout":"YYYY-MM-DD","guests":人数,"missing":["足りない情報"]}
+        kind の判断：新幹線・特急・電車→train、飛行機・航空券→flight、ホテル・宿・旅館→hotel、店・会食・ランチ・ディナー→restaurant。旅行全体で複数必要なら、会話で最後に話題になったもの、無ければ hotel。
+        必須：train/flight は origin, destination, date。hotel は area, checkin, checkout。restaurant は area。足りなければ missing に入れる。
+        直近の会話:
+        \(recentConversation)
+        依頼:
+        \(text)
+        """
+        job.terminationHandler = { [weak self] process in
+            try? handle?.close()
+            let result = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
+            try? FileManager.default.removeItem(at: folder)
+            Task { @MainActor in
+                guard let self, self.runID == id else { return }
+                self.runTimeout?.cancel(); self.process = nil
+                guard process.terminationStatus == 0, let plan = BookingPlan.parse(result) else {
+                    self.reply("予約の条件を読み取れませんでした。「20日の東京から新大阪の新幹線を取って」のように、行き先と日付を教えてください。"); return
+                }
+                self.openBooking(plan)
+            }
+        }
+        do {
+            try job.run()
+            stdin.fileHandleForWriting.write(Data(prompt.utf8)); try? stdin.fileHandleForWriting.close()
+            runTimeout = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 120_000_000_000)
+                guard !Task.isCancelled, let self, self.runID == id else { return }
+                self.cancel(); self.answer = "予約条件の整理がタイムアウトしました。もう一度お願いします。"
+            }
+        } catch { try? FileManager.default.removeItem(at: folder); process = nil; reply("予約の段取りを開始できませんでした: \(error.localizedDescription)") }
+    }
+
+    private func openBooking(_ plan: BookingPlan) {
+        guard plan.kind != .unknown else {
+            reply("何を予約しますか？ 新幹線・飛行機・宿・お店のどれか、行き先と日付を教えてください。"); return
+        }
+        guard let url = plan.searchURL else {
+            let missing = plan.missing.isEmpty ? "行き先や日付" : plan.missing.joined(separator: "、")
+            reply("\(plan.summary)で予約を進めるには、\(missing)が必要です。教えてください。"); return
+        }
+        BookingWindowController.shared.show(url)
+        reply("\(plan.summary)の条件で\(plan.siteName)を予約ブラウザに開きました。\(plan.handoffNote) 私は支払いや確定は押しません。")
+    }
+
     /// Gmail tools the child Claude may call. Reading and drafting only; sending,
     /// replying, forwarding, trashing and labelling are never allowed.
     private static let gmailReadTools = ["mcp__claude_ai_Gmail__search_threads", "mcp__claude_ai_Gmail__get_thread", "mcp__claude_ai_Gmail__get_message", "mcp__claude_ai_Gmail__list_labels"]

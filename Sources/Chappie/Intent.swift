@@ -150,6 +150,110 @@ enum Intent {
         return EventDraft(title: title, start: allDay ? calendar.startOfDay(for: start) : start, end: end, allDay: allDay)
     }
 
+    // MARK: Calendar edits
+
+    struct EventTarget: Equatable {
+        var hint: String            // words that should appear in the event title
+        var windowStart: Date
+        var windowEnd: Date
+        var hour: Int?              // "明日10時の会議" narrows to events starting at that hour
+    }
+
+    enum NewStart: Equatable {
+        case absolute(Date)         // "明後日の19時に"
+        case timeOnly(hour: Int, minute: Int)   // "16時に" — same day as the event
+        case dayOnly(Date)          // "金曜に" — same time, new day
+        case shift(TimeInterval)    // "30分後ろに"
+    }
+
+    enum CalendarEdit: Equatable {
+        case move(EventTarget, NewStart)
+        case delete(EventTarget)
+        case freeSlots(start: Date, end: Date, label: String, minutes: Int)
+    }
+
+    private static let moveWords = ["ずらして", "ずらしといて", "変更して", "変えて", "移して", "移動して", "動かして", "後ろ倒し", "前倒し", "リスケ", "延期して", "早めて", "遅らせて"]
+    private static let deleteWords = ["消して", "削除して", "キャンセルして", "取り消して", "なくして", "取りやめ", "中止にして"]
+
+    /// "明日の会議を16時にずらして" / "今日の打ち合わせをキャンセルして" / "来週で1時間空いてるところ".
+    /// Everything is parsed on the Mac; the Assistant then applies it to Apple Calendar.
+    static func calendarEdit(_ text: String, now: Date = Date(), calendar: Calendar = .current) -> CalendarEdit? {
+        if text.contains("空いてる") || text.contains("空いている") || text.contains("空き時間") {
+            let range = lookupRange(text, now: now, calendar: calendar)
+            var minutes = 60
+            if let match = text.range(of: #"(\d+)\s*(時間|分)"#, options: .regularExpression) {
+                let amount = Int(text[match].filter(\.isNumber)) ?? 1
+                minutes = text[match].contains("時間") ? amount * 60 : amount
+            }
+            return .freeSlots(start: range.start, end: range.end, label: range.label, minutes: minutes)
+        }
+        let isMove = moveWords.contains(where: text.contains)
+        let isDelete = deleteWords.contains(where: text.contains)
+        guard isMove || isDelete else { return nil }
+        guard calendarWords.contains(where: text.contains) || eventWords.contains(where: text.contains) || dateWords.contains(where: text.contains) else { return nil }
+
+        // Left of the first "を" names the event; the rest says where it goes.
+        let parts = text.components(separatedBy: "を")
+        let left = parts.first ?? text
+        let right = parts.count > 1 ? parts.dropFirst().joined(separator: "を") : ""
+
+        let window: (start: Date, end: Date, label: String)
+        if dateWords.contains(where: left.contains) {
+            window = lookupRange(left, now: now, calendar: calendar)
+        } else {
+            let today = calendar.startOfDay(for: now)
+            window = (today, calendar.date(byAdding: .day, value: 30, to: today)!, "今後30日")
+        }
+        var hour: Int?
+        if let match = left.range(of: #"(\d{1,2})\s*時"#, options: .regularExpression) {
+            hour = Int(left[match].filter(\.isNumber))
+            if left.contains("午後"), let value = hour, value < 12 { hour = value + 12 }
+        }
+        var hint = left
+        for word in dateWords + calendarWords + ["午前", "午後", "から", "の予定", "の件", "その", "この", "あの"] { hint = hint.replacingOccurrences(of: word, with: " ") }
+        hint = hint.replacingOccurrences(of: #"\d{1,2}\s*時(\d{1,2}分|半)?"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"[、。,.:：「」()（）]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"^(の|に|は|と)\s*"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s*(の|に|は|と)$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = EventTarget(hint: hint, windowStart: window.start, windowEnd: window.end, hour: hour)
+        if isDelete && !isMove { return .delete(target) }
+
+        if let match = right.range(of: #"(\d+)\s*(時間|分)\s*(後ろ|遅く|あと|後に|前|早く|早めて|遅らせて)"#, options: .regularExpression) {
+            let matched = String(right[match])
+            let amount = Double(Int(matched.filter(\.isNumber)) ?? 0)
+            let seconds = matched.contains("時間") ? amount * 3600 : amount * 60
+            let backwards = matched.contains("前") || matched.contains("早")
+            return .move(target, .shift(backwards ? -seconds : seconds))
+        }
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue) else { return nil }
+        let nsRight = right as NSString
+        guard let match = detector.matches(in: right, range: NSRange(location: 0, length: nsRight.length)).first(where: { $0.date != nil }),
+              let date = match.date else { return nil }
+        let matchedText = nsRight.substring(with: match.range)
+        let hasTime = matchedText.range(of: #"時|:|：|午前|午後|正午"#, options: .regularExpression) != nil
+        let hasDay = dateWords.contains(where: matchedText.contains) || matchedText.range(of: #"\d+\s*(月|/|日)"#, options: .regularExpression) != nil
+        if hasTime && hasDay { return .move(target, .absolute(date)) }
+        if hasTime {
+            let components = calendar.dateComponents([.hour, .minute], from: date)
+            return .move(target, .timeOnly(hour: components.hour ?? 0, minute: components.minute ?? 0))
+        }
+        return .move(target, .dayOnly(calendar.startOfDay(for: date)))
+    }
+
+    /// Title match used by move/delete. Either side containing the other counts, as does any 2-character run of the hint.
+    static func eventMatches(title: String, hint: String) -> Bool {
+        let cleanTitle = title.lowercased().replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "　", with: "")
+        let cleanHint = hint.lowercased().replacingOccurrences(of: " ", with: "").replacingOccurrences(of: "　", with: "")
+        guard !cleanHint.isEmpty else { return true }
+        if cleanTitle.contains(cleanHint) || cleanHint.contains(cleanTitle) { return true }
+        let chars = Array(cleanHint)
+        guard chars.count >= 2 else { return false }
+        return (0..<(chars.count - 1)).contains { cleanTitle.contains(String(chars[$0...$0 + 1])) }
+    }
+
     // MARK: Reminders
 
     struct ReminderDraft: Equatable {

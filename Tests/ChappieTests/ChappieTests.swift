@@ -21,7 +21,8 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         tests.testRuleChangeAndRemoval()
         tests.testRemoveRule()
         tests.testReminderDrafts()
-        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders")
+        tests.testCalendarEdits()
+        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits")
     }
     func testWakeAndSameUtterance() {
         XCTAssertEqual(WakePhrase.command(in: "ねえチャッピー、今日の予定"), "今日の予定")
@@ -229,5 +230,49 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         XCTAssertNil(Intent.reminderDraft(from: "シャンプー買って", now: now, calendar: calendar))
         XCTAssertTrue(Intent.isReminderListRequest("リマインドの一覧を見せて"))
         XCTAssertFalse(Intent.isReminderListRequest("30分後にリマインドして"))
+    }
+    func testCalendarEdits() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        let saturday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 12, hour: 10))!
+
+        guard case .move(let target, let newStart)? = Intent.calendarEdit("明日の会議を16時にずらして", now: saturday, calendar: calendar) else { preconditionFailure("move expected") }
+        XCTAssertEqual(target.hint, "会議")
+        XCTAssertEqual(calendar.component(.day, from: target.windowStart), 13)
+        XCTAssertEqual(newStart, .timeOnly(hour: 16, minute: 0))
+
+        guard case .move(let shifted, .shift(let seconds))? = Intent.calendarEdit("会議を30分後ろにずらして", now: saturday, calendar: calendar) else { preconditionFailure("shift expected") }
+        XCTAssertEqual(shifted.hint, "会議")
+        XCTAssertEqual(seconds, 1800)
+        guard case .move(_, .shift(let earlier))? = Intent.calendarEdit("会議を1時間前にずらして", now: saturday, calendar: calendar) else { preconditionFailure("shift expected") }
+        XCTAssertEqual(earlier, -3600)
+
+        guard case .move(let dinner, .absolute(let when))? = Intent.calendarEdit("田中さんとの会食を明後日の19時に移して", now: saturday, calendar: calendar) else { preconditionFailure("absolute expected") }
+        XCTAssertEqual(dinner.hint, "田中さんとの会食")
+        XCTAssertEqual(calendar.component(.day, from: when), 14)
+        XCTAssertEqual(calendar.component(.hour, from: when), 19)
+
+        guard case .move(_, .dayOnly(let day))? = Intent.calendarEdit("定例を金曜に移して", now: saturday, calendar: calendar) else { preconditionFailure("dayOnly expected") }
+        XCTAssertEqual(calendar.component(.weekday, from: day), 6)
+
+        guard case .delete(let cancel)? = Intent.calendarEdit("今日の打ち合わせをキャンセルして", now: saturday, calendar: calendar) else { preconditionFailure("delete expected") }
+        XCTAssertEqual(cancel.hint, "打ち合わせ")
+        XCTAssertEqual(calendar.component(.day, from: cancel.windowStart), 12)
+        guard case .delete(let tenOClock)? = Intent.calendarEdit("明日10時の会議を消して", now: saturday, calendar: calendar) else { preconditionFailure("delete expected") }
+        XCTAssertEqual(tenOClock.hour, 10)
+
+        guard case .freeSlots(let start, _, let label, let minutes)? = Intent.calendarEdit("来週で1時間空いてるところ", now: saturday, calendar: calendar) else { preconditionFailure("free slots expected") }
+        XCTAssertEqual(label, "来週")
+        XCTAssertEqual(minutes, 60)
+        XCTAssertEqual(calendar.component(.day, from: start), 14)
+        guard case .freeSlots(_, _, _, let defaultMinutes)? = Intent.calendarEdit("明日の空き時間", now: saturday, calendar: calendar) else { preconditionFailure("free slots expected") }
+        XCTAssertEqual(defaultMinutes, 60)
+
+        XCTAssertNil(Intent.calendarEdit("ウイスキーは登録から外して", now: saturday, calendar: calendar))
+        XCTAssertNil(Intent.calendarEdit("今日の予定", now: saturday, calendar: calendar))
+        XCTAssertNil(Intent.calendarEdit("明日15時に会議を入れて", now: saturday, calendar: calendar))
+        XCTAssertTrue(Intent.eventMatches(title: "田中さん 会食", hint: "田中さんとの会食"))
+        XCTAssertTrue(Intent.eventMatches(title: "週次定例MTG", hint: "定例"))
+        XCTAssertFalse(Intent.eventMatches(title: "歯医者", hint: "会議"))
     }
 }

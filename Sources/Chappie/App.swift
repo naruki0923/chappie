@@ -27,6 +27,24 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        // `Chappie --ask "今日の予定"` answers one request on stdout and quits; used to check routing without the UI.
+        if let index = CommandLine.arguments.firstIndex(of: "--ask"), CommandLine.arguments.count > index + 1 {
+            let initial = assistant.answer
+            assistant.readAloud = false
+            assistant.submit(CommandLine.arguments[index + 1])
+            var ticks = 0
+            Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [assistant] timer in
+                MainActor.assumeIsolated {
+                    ticks += 1
+                    guard (assistant.answer != initial && !assistant.busy) || ticks > 400 else { return }
+                    timer.invalidate()
+                    print("ANSWER:\n\(assistant.answer)")
+                    assistant.files.forEach { print("FILE:\($0.url.path)") }
+                    NSApp.terminate(nil)
+                }
+            }
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--render-icon"), CommandLine.arguments.count > index + 1 {
             let renderer = ImageRenderer(content: ChappieIcon())
             renderer.scale = 1
@@ -125,7 +143,7 @@ struct CompanionView: View {
                         VStack(alignment: .leading, spacing: 10) {
                             Toggle("音声で返事する", isOn: $model.readAloud)
                             Toggle("ログイン時に起動", isOn: Binding(get: { model.loginEnabled }, set: { model.setLogin($0) }))
-                            Text("呼びかけの認識はこのMac内で処理します。一般の質問はCodexに送信します。ファイル名検索と予定確認は端末内で処理します。")
+                            Text("呼びかけの認識はこのMac内で処理します。一般の質問と旅行などの提案は、ログイン済みのClaude Code CLI（無い場合はCodex CLI）に送信します。ファイル名検索と予定の確認・追加は端末内で処理します。")
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
                             Button("商品・noteを登録") { connections = true }
                             Text("Amazon購入：専用ブラウザで都度価格確認 / 売上サービス：未接続").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -146,7 +164,7 @@ struct CompanionView: View {
                         chip("予定", icon: "calendar") { model.submit("今日の予定") }
                         chip("ファイル", icon: "folder") { model.input = "ファイル " }
                         chip("価格", icon: "magnifyingglass") { model.input = "価格を調べて " }
-                        chip("購入", icon: "bag") { model.input = "購入したい。AmazonかTikTok Shopで、商品：" }
+                        chip("購入", icon: "bag") { model.submit("何が買える？") }
                     }
                     HStack(alignment: .center, spacing: 8) {
                         TextField("何を手伝おう？", text: $model.input).textFieldStyle(.plain).onSubmit { model.submit() }

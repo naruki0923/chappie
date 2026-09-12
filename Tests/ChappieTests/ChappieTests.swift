@@ -5,13 +5,19 @@ func XCTAssertNotNil<T>(_ value: T?) { precondition(value != nil) }
 func XCTAssertTrue(_ value: Bool) { precondition(value) }
 func XCTAssertFalse(_ value: Bool) { precondition(!value) }
 @main struct ChappieTests {
-    static func main() {
+    @MainActor static func main() {
         let tests = ChappieTests()
         tests.testWakeAndSameUtterance()
         tests.testPurchaseLimitsAndDuplicates()
         tests.testLookalikeAndInvalidRules()
         tests.testProductNameMatching()
-        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation")
+        tests.testPurchaseIntent()
+        tests.testConfirmationAnswers()
+        tests.testCalendarRouting()
+        tests.testEventDraft()
+        tests.testFileAndOtherRouting()
+        tests.testSavePreservesRuleID()
+        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts")
     }
     func testWakeAndSameUtterance() {
         XCTAssertEqual(WakePhrase.command(in: "ねえチャッピー、今日の予定"), "今日の予定")
@@ -42,5 +48,111 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         XCTAssertTrue(ProductNameMatcher.matches(command: "しゃんぷ注文して", productName: "シャンプー"))
         XCTAssertTrue(ProductNameMatcher.matches(command: "ヘアーオイルお願い", productName: "ヘアオイル"))
         XCTAssertFalse(ProductNameMatcher.matches(command: "シャンプー買って", productName: "ディフューザー"))
+    }
+    func testPurchaseIntent() {
+        XCTAssertEqual(Intent.purchaseIntent("シャンプー買って"), .explicit)
+        XCTAssertEqual(Intent.purchaseIntent("購入したい。AmazonかTikTok Shopで、商品：シャンプー"), .explicit)
+        XCTAssertEqual(Intent.purchaseIntent("柔軟剤を注文しといて"), .explicit)
+        XCTAssertEqual(Intent.purchaseIntent("旅行のプランをお願い"), .soft)
+        XCTAssertEqual(Intent.purchaseIntent("新しいマウスが欲しい"), .soft)
+        XCTAssertEqual(Intent.purchaseIntent("来月の旅行の予定を考えて"), .none)
+        XCTAssertTrue(Intent.isPurchasableListRequest("何が買える？"))
+        XCTAssertTrue(Intent.isPurchasableListRequest("登録商品を教えて"))
+    }
+    func testConfirmationAnswers() {
+        for yes in ["いいよ", "いいよ。", "はい、いいよ", "うん", "オッケー", "OK", "お願いします", "それで進めて", "はい"] {
+            XCTAssertTrue(Intent.isAffirmative(yes))
+            XCTAssertFalse(Intent.isNegative(yes))
+        }
+        for no in ["やめて", "いいえ", "キャンセル", "やめといて", "いや、やめて", "いらない", "ちょっと待って", "だめ"] {
+            XCTAssertTrue(Intent.isNegative(no))
+            XCTAssertFalse(Intent.isAffirmative(no))
+        }
+        XCTAssertFalse(Intent.isAffirmative("今日の予定"))
+        XCTAssertFalse(Intent.isNegative("今日の予定"))
+        XCTAssertFalse(Intent.isAffirmative(""))
+    }
+    func testCalendarRouting() {
+        for lookup in ["今日の予定", "明日の予定を教えて", "今週の予定は？", "カレンダー見せて", "来週空いてる？"] {
+            XCTAssertTrue(Intent.isCalendarLookup(lookup))
+            XCTAssertFalse(Intent.isCalendarAddition(lookup))
+        }
+        for planning in ["来月の旅行の予定を考えて", "旅行の予定を立てて", "週末の予定のおすすめは？", "出張のプランを提案して"] {
+            XCTAssertFalse(Intent.isCalendarLookup(planning))
+            XCTAssertFalse(Intent.isCalendarAddition(planning))
+        }
+        for addition in ["明日15時に会議を入れて", "来週の火曜日10時に歯医者の予定を追加して", "9月20日 14:00 打ち合わせを登録して", "金曜の夜に会食を入れといて"] {
+            XCTAssertTrue(Intent.isCalendarAddition(addition))
+        }
+        XCTAssertFalse(Intent.isCalendarAddition("シャンプー買って"))
+        XCTAssertTrue(Intent.isTravelEvent("沖縄旅行"))
+        XCTAssertTrue(Intent.isTravelEvent("大阪出張"))
+        XCTAssertFalse(Intent.isTravelEvent("定例会議"))
+
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Tokyo")!
+        let saturday = calendar.date(from: DateComponents(year: 2026, month: 9, day: 12, hour: 10))!
+        let today = Intent.lookupRange("今日の予定", now: saturday, calendar: calendar)
+        XCTAssertEqual(calendar.component(.day, from: today.start), 12)
+        XCTAssertEqual(calendar.component(.day, from: today.end), 13)
+        let tomorrow = Intent.lookupRange("明日の予定", now: saturday, calendar: calendar)
+        XCTAssertEqual(calendar.component(.day, from: tomorrow.start), 13)
+        let nextWeek = Intent.lookupRange("来週の予定", now: saturday, calendar: calendar)
+        XCTAssertEqual(calendar.component(.day, from: nextWeek.start), 14)
+        XCTAssertEqual(calendar.component(.weekday, from: nextWeek.start), 2)
+        XCTAssertEqual(calendar.component(.day, from: nextWeek.end), 21)
+        let week = Intent.lookupRange("今週の予定", now: saturday, calendar: calendar)
+        XCTAssertEqual(calendar.component(.day, from: week.end), 19)
+    }
+    func testEventDraft() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let now = Date()
+        let meeting = Intent.eventDraft(from: "明日15時に会議を入れて", now: now, calendar: calendar)
+        XCTAssertNotNil(meeting)
+        XCTAssertEqual(meeting?.title, "会議")
+        XCTAssertEqual(meeting.map { calendar.component(.hour, from: $0.start) }, 15)
+        XCTAssertEqual(meeting.map { $0.end.timeIntervalSince($0.start) }, 3600)
+        XCTAssertEqual(meeting?.allDay, false)
+        XCTAssertEqual(meeting.map { calendar.isDate($0.start, inSameDayAs: calendar.date(byAdding: .day, value: 1, to: now)!) }, true)
+
+        let dentist = Intent.eventDraft(from: "来週の火曜日10時に歯医者の予定を追加して", now: now, calendar: calendar)
+        XCTAssertEqual(dentist?.title, "歯医者")
+        XCTAssertEqual(dentist.map { calendar.component(.hour, from: $0.start) }, 10)
+
+        let dinner = Intent.eventDraft(from: "10/3 19時 田中さんと会食を登録して", now: now, calendar: calendar)
+        XCTAssertEqual(dinner?.title, "田中さんと会食")
+        XCTAssertEqual(dinner.map { calendar.component(.month, from: $0.start) }, 10)
+        XCTAssertEqual(dinner.map { calendar.component(.day, from: $0.start) }, 3)
+
+        let trip = Intent.eventDraft(from: "9月20日に沖縄旅行を入れて", now: now, calendar: calendar)
+        XCTAssertEqual(trip?.title, "沖縄旅行")
+        XCTAssertEqual(trip?.allDay, true)
+        XCTAssertEqual(trip.map { $0.end.timeIntervalSince($0.start) }, 86400)
+
+        XCTAssertNil(Intent.eventDraft(from: "会議を入れて", now: now, calendar: calendar))
+    }
+    func testFileAndOtherRouting() {
+        XCTAssertEqual(Intent.fileSearchTerm("ファイル 請求書"), "請求書")
+        XCTAssertEqual(Intent.fileSearchTerm("請求書のファイルを探して"), "請求書")
+        XCTAssertEqual(Intent.fileSearchTerm("ファイル"), "")
+        XCTAssertNil(Intent.fileSearchTerm("旅行のファイルを作って"))
+        XCTAssertNil(Intent.fileSearchTerm("今日の予定"))
+        XCTAssertTrue(Intent.isSalesQuestion("今日の売上は？"))
+        XCTAssertFalse(Intent.isSalesQuestion("レストランの注文方法を教えて"))
+        XCTAssertTrue(Intent.isSettingsQuestion("今の設定を教えて"))
+        XCTAssertTrue(Intent.isSettingsQuestion("何ができる？"))
+        XCTAssertFalse(Intent.isSettingsQuestion("旅行の案を出して"))
+        XCTAssertEqual(WakePhrase.command(in: "チャッピー、旅行の案を出して"), "旅行の案を出して")
+    }
+    @MainActor func testSavePreservesRuleID() {
+        let store = Connections(defaults: UserDefaults(suiteName: "local.chappie.tests.\(UUID().uuidString)")!)
+        let first = PurchaseRule(name: "シャンプー", url: URL(string: "https://www.amazon.co.jp/dp/EXAMPLE")!, quantity: 1, maxTotalYen: 0)
+        XCTAssertNil(store.save(first))
+        let replacement = PurchaseRule(name: "シャンプー", url: URL(string: "https://www.amazon.co.jp/dp/EXAMPLE2")!, quantity: 2, maxTotalYen: 3000)
+        XCTAssertNil(store.save(replacement))
+        XCTAssertEqual(store.products.count, 1)
+        XCTAssertEqual(store.products[0].id, first.id)
+        XCTAssertEqual(store.products[0].quantity, 2)
     }
 }

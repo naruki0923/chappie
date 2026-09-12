@@ -89,10 +89,12 @@ struct PurchaseRule: Codable, Identifiable, Equatable {
 @MainActor
 final class Connections: ObservableObject {
     @Published var products: [PurchaseRule] = []
-    @Published var noteURL = "" { didSet { UserDefaults.standard.set(noteURL, forKey: "noteSource") } }
-    init() {
-        noteURL = UserDefaults.standard.string(forKey: "noteSource") ?? ""
-        if let data = UserDefaults.standard.data(forKey: "purchaseRules"),
+    @Published var noteURL = "" { didSet { defaults.set(noteURL, forKey: "noteSource") } }
+    private let defaults: UserDefaults
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        noteURL = defaults.string(forKey: "noteSource") ?? ""
+        if let data = defaults.data(forKey: "purchaseRules"),
            var rules = try? JSONDecoder().decode([PurchaseRule].self, from: data) {
             var migrated = false
             for index in rules.indices where rules[index].name == "ディヒューザー" {
@@ -101,24 +103,29 @@ final class Connections: ObservableObject {
             }
             products = rules
             if migrated, let updated = try? JSONEncoder().encode(rules) {
-                UserDefaults.standard.set(updated, forKey: "purchaseRules")
+                defaults.set(updated, forKey: "purchaseRules")
             }
         }
     }
     func save(_ rule: PurchaseRule) -> String? {
         if let error = rule.validationError { return error }
-        if let index = products.firstIndex(where: { $0.name == rule.name }) { products[index] = rule } else { products.append(rule) }
-        if let data = try? JSONEncoder().encode(products) { UserDefaults.standard.set(data, forKey: "purchaseRules") }
+        if let index = products.firstIndex(where: { $0.name == rule.name }) {
+            // Keep the original id so the last-purchase record survives a CSV re-import.
+            var updated = rule
+            updated.id = products[index].id
+            products[index] = updated
+        } else { products.append(rule) }
+        if let data = try? JSONEncoder().encode(products) { defaults.set(data, forKey: "purchaseRules") }
         return nil
     }
 
     func lastPurchased(_ rule: PurchaseRule) -> Date? {
-        let timestamp = UserDefaults.standard.double(forKey: "lastPurchase.\(rule.id.uuidString)")
+        let timestamp = defaults.double(forKey: "lastPurchase.\(rule.id.uuidString)")
         return timestamp > 0 ? Date(timeIntervalSince1970: timestamp) : nil
     }
 
     func recordPurchase(_ rule: PurchaseRule) {
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "lastPurchase.\(rule.id.uuidString)")
+        defaults.set(Date().timeIntervalSince1970, forKey: "lastPurchase.\(rule.id.uuidString)")
     }
 
     @discardableResult

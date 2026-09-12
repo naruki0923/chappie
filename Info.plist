@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>local.chappie.companion</string>
+<key>CFBundleName</key><string>チャッピー</string>
+<key>CFBundleDisplayName</key><string>チャッピー</string>
+<key>CFBundleIconFile</key><string>Chappie</string>
+<key>CFBundleExecutable</key><string>Chappie</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.4.3</string>
+<key>CFBundleVersion</key><string>10</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>LSUIElement</key><true/>
+<key>NSMicrophoneUsageDescription</key><string>「チャッピー」の呼びかけと、その後の質問を聞き取ります。</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>呼びかけと質問を、このMac内で文字に変換します。</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>今日・明日の予定を確認してお伝えします。予定の変更は行いません。</string>
+</dict></plist>

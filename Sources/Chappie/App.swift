@@ -87,6 +87,7 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if CommandLine.arguments.contains("--enable-voice") || UserDefaults.standard.bool(forKey: "voiceEnabled") { Task { await assistant.voice.start() } }
+        assistant.startReminderClock()
     }
     private func resize(_ expanded: Bool) {
         let old = panel.frame

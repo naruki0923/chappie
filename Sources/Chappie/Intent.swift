@@ -62,7 +62,7 @@ enum Intent {
 
     private static let calendarWords = ["予定", "カレンダー", "スケジュール"]
     private static let dateWords = ["今日", "きょう", "明日", "あした", "明後日", "あさって", "今週", "来週", "週末", "今月", "来月", "月曜", "火曜", "水曜", "木曜", "金曜", "土曜", "日曜"]
-    private static let planningWords = ["立てて", "立てたい", "考えて", "提案", "おすすめ", "お勧め", "オススメ", "プラン", "組んで", "作って", "決めて", "調べて", "検討", "案を", "案が", "案は", "案出", "アイデア"]
+    private static let planningWords = ["立てて", "立てたい", "考えて", "提案", "おすすめ", "お勧め", "オススメ", "プラン", "組んで", "作って", "決めて", "検討", "案を", "案が", "案は", "案出", "アイデア"]
     private static let additionWords = ["入れて", "入れといて", "入れておいて", "追加して", "追加しといて", "登録して", "登録しといて", "作成して", "セットして", "押さえて", "おさえて", "ブロックして"]
     private static let eventWords = ["会議", "打ち合わせ", "打合せ", "ミーティング", "アポ", "面談", "会食", "飲み会", "ランチ", "ディナー", "歯医者", "病院", "出張", "旅行", "リマインド", "締め切り", "締切"]
 
@@ -148,6 +148,67 @@ enum Intent {
             .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         if title.isEmpty { title = "予定" }
         return EventDraft(title: title, start: allDay ? calendar.startOfDay(for: start) : start, end: end, allDay: allDay)
+    }
+
+    // MARK: Reminders
+
+    struct ReminderDraft: Equatable {
+        var title: String
+        var due: Date
+    }
+
+    private static let reminderWords = ["リマインド", "思い出させて", "知らせて", "通知して", "アラーム", "忘れないように", "声かけて", "声をかけて", "呼んで"]
+
+    static func isReminderListRequest(_ text: String) -> Bool {
+        guard text.contains("リマインド") || text.contains("リマインダー") else { return false }
+        return ["一覧", "何がある", "なにがある", "何が入って", "確認", "見せて", "教えて", "ある？", "ある?"].contains(where: text.contains)
+    }
+
+    /// "30分後に電話するのを教えて" / "金曜に振込をリマインドして". Relative times are
+    /// resolved here; absolute ones use the system detector. Dates without a time default to 9:00.
+    static func reminderDraft(from text: String, now: Date = Date(), calendar: Calendar = .current) -> ReminderDraft? {
+        let hasReminderWord = reminderWords.contains(where: text.contains)
+        var due: Date?
+        var consumed: [Range<String.Index>] = []
+        var relative = false
+
+        if let match = text.range(of: #"(あと\s*)?(\d+)\s*(分|時間|日)(後|で|したら|経ったら|たったら)?"#, options: .regularExpression) {
+            let matched = String(text[match])
+            guard matched.contains("後") || matched.contains("あと") || matched.contains("したら") || matched.contains("経ったら") || matched.contains("たったら") || matched.contains("で") else { return nil }
+            let amount = Int(matched.filter(\.isNumber)) ?? 0
+            guard amount > 0 else { return nil }
+            let unit: Calendar.Component = matched.contains("分") ? .minute : matched.contains("時間") ? .hour : .day
+            due = calendar.date(byAdding: unit, value: amount, to: now)
+            consumed.append(match)
+            relative = true
+        } else if hasReminderWord || text.contains("になったら") || text.contains("になったら教えて") {
+            guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue) else { return nil }
+            let nsText = text as NSString
+            guard let match = detector.matches(in: text, range: NSRange(location: 0, length: nsText.length)).first(where: { $0.date != nil }),
+                  var date = match.date, let range = Range(match.range, in: text) else { return nil }
+            let matchedText = nsText.substring(with: match.range)
+            if matchedText.range(of: #"時|:|：|午前|午後|朝|昼|夜|夕方|正午"#, options: .regularExpression) == nil {
+                date = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: date) ?? date
+            }
+            due = date
+            consumed.append(range)
+        }
+        // "1時間後に休憩" is a reminder even without a verb; an absolute time still needs one.
+        guard let due, relative || hasReminderWord || text.contains("になったら") else { return nil }
+
+        var title = text
+        for range in consumed.sorted(by: { $0.lowerBound > $1.lowerBound }) { title.replaceSubrange(range, with: " ") }
+        let noise = ["になったら", "リマインドして", "リマインドしといて", "リマインド", "思い出させて", "知らせて", "通知して", "アラームをかけて", "アラーム",
+                     "忘れないように", "声かけて", "声をかけて", "呼んで", "教えて", "するのを", "することを", "するように", "するの", "ように", "のを", "ことを", "って", "ください", "お願い", "ね", "よ"]
+        for word in noise.sorted(by: { $0.count > $1.count }) { title = title.replacingOccurrences(of: word, with: " ") }
+        title = title.replacingOccurrences(of: #"[、。,.:：「」()（）]"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        title = title.replacingOccurrences(of: #"^(を|は|で|に|と|の|も|が)\s*"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s*(を|は|で|に|と|の|も|が)$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if title.isEmpty { title = "リマインド" }
+        return ReminderDraft(title: title, due: due)
     }
 
     // MARK: Product registration

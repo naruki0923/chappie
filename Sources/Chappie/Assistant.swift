@@ -92,6 +92,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             quotePurchase(rule); return
         }
         if purchase == .explicit { reply(purchasableSummary()); return }
+        if Intent.isOrderStatusQuestion(text) { orderStatus(text); return }
         if Intent.isSettingsQuestion(text) { reply(chappieSettingsSummary()); return }
         if Intent.isSalesQuestion(text) {
             reply("注文・売上のデータ接続はまだ設定されていません。利用する店舗・管理サービスが決まったら接続できます。現在の数値や注文状況は取得できません。"); return
@@ -291,6 +292,9 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             switch result {
             case .success(let purchase):
                 self.connections.recordPurchase(rule)
+                self.connections.logPurchase(PurchaseLogEntry(name: rule.name, title: purchase.title, quantity: rule.quantity,
+                                                              totalYen: purchase.totalYen, orderNumber: purchase.orderNumber,
+                                                              delivery: purchase.delivery, orderedAt: Date()))
                 var details = "\(purchase.title)を\(rule.quantity)個、合計¥\(purchase.totalYen.formatted())で購入できました。"
                 if !purchase.delivery.isEmpty { details += " お届け予定は\(purchase.delivery)です。" }
                 if !purchase.orderNumber.isEmpty { details += " 注文番号は\(purchase.orderNumber)です。" }
@@ -542,6 +546,74 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if let observer = queryObserver { NotificationCenter.default.removeObserver(observer) }
         queryObserver = nil
     }
+    // MARK: Order status
+
+    /// Answers from Chappie's own purchase log first, then reads the signed-in Amazon
+    /// order page for delivery status. Nothing is clicked on Amazon.
+    private func orderStatus(_ text: String) {
+        let calendar = Calendar.current
+        let yesterday = text.contains("昨日") || text.contains("きのう")
+        let today = !yesterday && (text.contains("今日") || text.contains("本日"))
+        let dayLabel = yesterday ? "昨日" : "今日"
+        let log = connections.purchaseLog.filter {
+            if yesterday { return calendar.isDateInYesterday($0.orderedAt) }
+            return !today || calendar.isDateInToday($0.orderedAt)
+        }
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "ja_JP"); formatter.dateFormat = "M/d(E) H:mm"
+        var lines: [String] = []
+        let filtered = today || yesterday
+        if log.isEmpty {
+            lines.append(filtered ? "\(dayLabel)、私が注文したものはありません。" : "私が注文した記録はまだありません。")
+        } else {
+            lines.append(filtered ? "\(dayLabel)、私が注文したのは\(log.count)件です。" : "私が注文した直近\(min(log.count, 5))件です。")
+            for entry in log.prefix(5) {
+                var line = "\(formatter.string(from: entry.orderedAt))  \(entry.name)×\(entry.quantity) ¥\(entry.totalYen.formatted())"
+                if !entry.delivery.isEmpty { line += "、お届け予定 \(entry.delivery)" }
+                if !entry.orderNumber.isEmpty { line += "（注文番号 \(entry.orderNumber)）" }
+                lines.append(line)
+            }
+        }
+        busy = true; voice.suppressed = true
+        answer = (lines + ["Amazonの注文履歴で配送状況を確認しています…"]).joined(separator: "\n")
+        let id = UUID(); runID = id
+        let knownNumbers = Set(log.map(\.orderNumber).filter { !$0.isEmpty })
+        AmazonSessionWindowController.shared.fetchOrders { [weak self] result in
+            guard let self, self.runID == id else { return }
+            switch result {
+            case .success(let orders):
+                let targetDay = Self.amazonDate(yesterday ? calendar.date(byAdding: .day, value: -1, to: Date())! : Date())
+                var shown = orders.filter { !filtered || $0.orderedOn == targetDay }
+                var header = "Amazonの注文履歴（\(filtered ? dayLabel : "直近")\(shown.count)件）："
+                if shown.isEmpty, filtered, !orders.isEmpty {
+                    // Nothing that day — still tell them what is on the way.
+                    shown = Array(orders.prefix(3))
+                    header = "Amazonの注文履歴に\(dayLabel)の注文はありません。直近の注文はこちらです："
+                }
+                if shown.isEmpty {
+                    lines.append("Amazonの直近30日に注文はありません。")
+                } else {
+                    lines.append(header)
+                    for order in shown.prefix(6) {
+                        let items = order.items.isEmpty ? "商品名を読めませんでした" : order.items.map { String($0.prefix(30)) }.joined(separator: "、")
+                        var line = "・\(order.orderedOn.isEmpty ? "" : order.orderedOn + " ")\(items)"
+                        if order.totalYen > 0 { line += " ¥\(order.totalYen.formatted())" }
+                        line += order.status.isEmpty ? "（配送状況は表示されていません）" : " — \(order.status)"
+                        if !order.orderNumber.isEmpty, knownNumbers.contains(order.orderNumber) { line += "（私が注文した分）" }
+                        lines.append(line)
+                    }
+                }
+            case .failure(let error):
+                lines.append("Amazonの注文履歴は読めませんでした。\(error.localizedDescription)")
+            }
+            self.reply(lines.joined(separator: "\n"))
+        }
+    }
+
+    private static func amazonDate(_ date: Date) -> String {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "ja_JP"); formatter.dateFormat = "yyyy年M月d日"
+        return formatter.string(from: date)
+    }
+
     // MARK: Booking
 
     /// Asks the child Claude for the booking conditions as JSON (using the recent

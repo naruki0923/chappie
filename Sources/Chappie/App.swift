@@ -28,6 +28,15 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate {
             return
         }
         // `Chappie --ask "今日の予定"` answers one request on stdout and quits; used to check routing without the UI.
+        // `Chappie --dump-orders` prints the raw text of each Amazon order card, for checking the parser after Amazon changes its page.
+        if CommandLine.arguments.contains("--dump-orders") {
+            AmazonOrder.debugDump = { print("----- CARD -----\n\($0)") }
+            AmazonSessionWindowController.shared.fetchOrders { result in
+                if case .failure(let error) = result { print("ERROR: \(error.localizedDescription)") }
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if let index = CommandLine.arguments.firstIndex(of: "--ask"), CommandLine.arguments.count > index + 1 {
             let initial = assistant.answer
             assistant.readAloud = false

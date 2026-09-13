@@ -437,7 +437,16 @@ enum Intent {
     // MARK: Sales / settings
 
     static func isSalesQuestion(_ text: String) -> Bool {
-        ["売上", "売り上げ", "受注", "注文状況", "注文数", "注文件数", "注文履歴", "今日の注文", "本日の注文"].contains(where: text.contains)
+        ["売上", "売り上げ", "受注", "注文数", "注文件数"].contains(where: text.contains)
+    }
+
+    /// "今日買ったものはいつ届く？" / "注文状況" / "シャンプーはいつ来る？" — the user's own purchases.
+    static func isOrderStatusQuestion(_ text: String) -> Bool {
+        let deliveryWords = ["届く", "届いた", "届き", "配達", "配送", "到着", "いつ来る", "いつくる", "発送", "出荷"]
+        let orderWords = ["注文状況", "注文履歴", "注文したもの", "注文した物", "注文の記録", "買ったもの", "買った物", "買ったやつ", "購入したもの", "購入した物", "購入履歴", "購入の記録", "注文してるもの", "頼んだもの", "頼んだやつ"]
+        if orderWords.contains(where: text.contains) { return true }
+        guard deliveryWords.contains(where: text.contains) else { return false }
+        return ["注文", "買った", "購入", "頼んだ", "荷物", "商品", "amazon", "アマゾン"].contains(where: text.lowercased().contains)
     }
 
     /// The wake word has already been removed, so only questions about the app itself match.

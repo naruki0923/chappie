@@ -1,9 +1,9 @@
 import Foundation
-func XCTAssertEqual<T: Equatable>(_ lhs: T, _ rhs: T) { precondition(lhs == rhs) }
-func XCTAssertNil<T>(_ value: T?) { precondition(value == nil) }
-func XCTAssertNotNil<T>(_ value: T?) { precondition(value != nil) }
-func XCTAssertTrue(_ value: Bool) { precondition(value) }
-func XCTAssertFalse(_ value: Bool) { precondition(!value) }
+func XCTAssertEqual<T: Equatable>(_ lhs: T, _ rhs: T, line: UInt = #line) { precondition(lhs == rhs, "line \(line): \(lhs) != \(rhs)") }
+func XCTAssertNil<T>(_ value: T?, line: UInt = #line) { precondition(value == nil, "line \(line): expected nil, got \(value!)") }
+func XCTAssertNotNil<T>(_ value: T?, line: UInt = #line) { precondition(value != nil, "line \(line): expected a value") }
+func XCTAssertTrue(_ value: Bool, line: UInt = #line) { precondition(value, "line \(line): expected true") }
+func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "line \(line): expected false") }
 @main struct ChappieTests {
     @MainActor static func main() {
         let tests = ChappieTests()
@@ -24,7 +24,8 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         tests.testCalendarEdits()
         tests.testMailRequests()
         tests.testBooking()
-        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking")
+        tests.testOrderStatus()
+        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking, order status")
     }
     func testWakeAndSameUtterance() {
         XCTAssertEqual(WakePhrase.command(in: "ねえチャッピー、今日の予定"), "今日の予定")
@@ -251,8 +252,10 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
 
         guard case .move(let dinner, .absolute(let when))? = Intent.calendarEdit("田中さんとの会食を明後日の19時に移して", now: saturday, calendar: calendar) else { preconditionFailure("absolute expected") }
         XCTAssertEqual(dinner.hint, "田中さんとの会食")
-        XCTAssertEqual(calendar.component(.day, from: when), 14)
-        XCTAssertEqual(calendar.component(.hour, from: when), 19)
+        // NSDataDetector resolves "明後日" against the real clock, not the test's fixed date.
+        let dayAfterTomorrow = Calendar.current.date(byAdding: .day, value: 2, to: Date())!
+        XCTAssertTrue(Calendar.current.isDate(when, inSameDayAs: dayAfterTomorrow))
+        XCTAssertEqual(Calendar.current.component(.hour, from: when), 19)
 
         guard case .move(_, .dayOnly(let day))? = Intent.calendarEdit("定例を金曜に移して", now: saturday, calendar: calendar) else { preconditionFailure("dayOnly expected") }
         XCTAssertEqual(calendar.component(.weekday, from: day), 6)
@@ -317,5 +320,39 @@ func XCTAssertFalse(_ value: Bool) { precondition(!value) }
         XCTAssertNil(incomplete?.searchURL)
         XCTAssertEqual(incomplete?.missing.count, 2)
         XCTAssertNil(BookingPlan.parse("分かりません"))
+    }
+    func testOrderStatus() {
+        for text in ["今日買ったものはいつ届く？", "注文状況を教えて", "シャンプーの荷物いつ来る？", "Amazonで頼んだやつ届いた？", "購入履歴を見せて"] {
+            XCTAssertTrue(Intent.isOrderStatusQuestion(text))
+            XCTAssertFalse(Intent.isSalesQuestion(text))
+        }
+        for text in ["今日の売上は？", "受注は何件？", "今日の予定", "シャンプー買って", "明日届くように会議を入れて"] {
+            XCTAssertFalse(Intent.isOrderStatusQuestion(text))
+        }
+        let card = """
+        注文日
+        2026年9月12日
+        合計
+        ￥1,210
+        お届け先
+        山田
+        注文番号 249-1234567-7654321
+        注文内容を表示 領収書等
+        9月15日 月曜日にお届け予定
+        シャンプー 詰め替え 400ml
+        再度購入
+        """
+        let order = AmazonOrder.parse(text: card, items: ["シャンプー 詰め替え 400ml"])
+        XCTAssertEqual(order?.orderedOn, "2026年9月12日")
+        XCTAssertEqual(order?.totalYen, 1210)
+        XCTAssertEqual(order?.orderNumber, "249-1234567-7654321")
+        XCTAssertEqual(order?.status, "9月15日 月曜日にお届け予定")
+        XCTAssertEqual(order?.items, ["シャンプー 詰め替え 400ml"])
+        XCTAssertEqual(AmazonOrder.parse(text: "配達済み 9月10日", items: [])?.orderedOn, nil)
+        let delivered = AmazonOrder.parse(text: "注文日\n2026年8月18日\n合計\n￥1,339\n注文番号 249-0000000-0000000\n9月3日にお届け済み\n炭酸水 ×24本\n自動配達済み： 2ヶ月ごと", items: ["炭酸水 ×24本"])
+        XCTAssertEqual(delivered?.status, "9月3日にお届け済み")
+        let cancelled = AmazonOrder.parse(text: "注文日\n2026年9月12日\n注文番号 249-0000000-0000001\nキャンセル済み\n注文はキャンセルされました。 この注文の請求は行われていません。\nシャンプー", items: ["シャンプー"])
+        XCTAssertEqual(cancelled?.status, "キャンセル済み")
+        XCTAssertEqual(cancelled?.totalYen, 0)
     }
 }

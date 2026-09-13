@@ -86,6 +86,17 @@ struct PurchaseRule: Codable, Identifiable, Equatable {
     }
 }
 
+struct PurchaseLogEntry: Codable, Identifiable, Equatable {
+    var id = UUID()
+    var name: String
+    var title: String
+    var quantity: Int
+    var totalYen: Int
+    var orderNumber: String
+    var delivery: String
+    var orderedAt: Date
+}
+
 @MainActor
 final class Connections: ObservableObject {
     @Published var products: [PurchaseRule] = []
@@ -131,6 +142,17 @@ final class Connections: ObservableObject {
 
     func recordPurchase(_ rule: PurchaseRule) {
         defaults.set(Date().timeIntervalSince1970, forKey: "lastPurchase.\(rule.id.uuidString)")
+    }
+
+    /// Every order Chappie placed, newest first. This is the local record that answers
+    /// "今日買ったものはいつ届く？" even before Amazon's order page is read.
+    var purchaseLog: [PurchaseLogEntry] {
+        get { defaults.data(forKey: "purchaseLog").flatMap { try? JSONDecoder().decode([PurchaseLogEntry].self, from: $0) } ?? [] }
+        set { defaults.set(try? JSONEncoder().encode(Array(newValue.prefix(100))), forKey: "purchaseLog") }
+    }
+
+    func logPurchase(_ entry: PurchaseLogEntry) {
+        purchaseLog = [entry] + purchaseLog
     }
 
     @discardableResult

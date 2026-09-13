@@ -10,6 +10,39 @@ struct AmazonQuote {
     var totalYen: Int { unitPriceYen * quantity + shippingYen }
 }
 
+struct AmazonOrder: Equatable {
+    let orderedOn: String      // "2026年9月12日"
+    let totalYen: Int
+    let orderNumber: String
+    let status: String         // "9月15日 月曜日にお届け予定" / "配達済み"
+    let items: [String]
+
+    /// Parses one order card's visible text plus the item titles the script found.
+    static var debugDump: ((String) -> Void)?
+
+    static func parse(text: String, items: [String]) -> AmazonOrder? {
+        debugDump?(text)
+        func first(_ pattern: String) -> String? {
+            guard let range = text.range(of: pattern, options: .regularExpression) else { return nil }
+            return String(text[range])
+        }
+        let orderedOn = first(#"\d{4}年\d{1,2}月\d{1,2}日"#) ?? ""
+        let orderNumber = first(#"\d{3}-\d{7}-\d{7}"#) ?? ""
+        var total = 0
+        if let range = text.range(of: #"合計\s*[￥¥]\s*[0-9,]+"#, options: .regularExpression) {
+            total = Int(text[range].filter(\.isNumber)) ?? 0
+        }
+        // e.g. "10月6日にお届け", "9月3日にお届け済み", "キャンセル済み". Subscription
+        // labels ("自動配達済み： 2ヶ月ごと") and the long cancellation sentence are not statuses.
+        let statusLine = text.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.first { line in
+            !line.hasPrefix("自動配達") && !line.hasPrefix("注文はキャンセル") && line.count < 60 &&
+            line.range(of: #"にお届け|お届け済み|お届け予定|配達済み|配達予定|到着予定|到着しました|配送中|配達中|発送済み|発送しました|出荷準備|本日到着|明日到着|返品|キャンセル済み|遅延"#, options: .regularExpression) != nil
+        } ?? ""
+        guard !orderedOn.isEmpty || !orderNumber.isEmpty else { return nil }
+        return AmazonOrder(orderedOn: orderedOn, totalYen: total, orderNumber: orderNumber, status: statusLine, items: items)
+    }
+}
+
 struct AmazonPurchaseResult {
     let title: String
     let totalYen: Int
@@ -28,6 +61,7 @@ final class AmazonSessionWindowController: NSObject, WKNavigationDelegate {
     private var webView: WKWebView?
     private var pendingQuote: (quantity: Int, attempts: Int, completion: (Result<AmazonQuote, Error>) -> Void)?
     private var pendingCheckout: Checkout?
+    private var pendingOrders: (attempts: Int, completion: (Result<[AmazonOrder], Error>) -> Void)?
 
     private struct Checkout {
         enum Phase { case product, checkout, submitted }
@@ -144,6 +178,64 @@ final class AmazonSessionWindowController: NSObject, WKNavigationDelegate {
     private func finishQuote(_ result: Result<AmazonQuote, Error>) {
         guard let completion = pendingQuote?.completion else { return }
         pendingQuote = nil
+        completion(result)
+    }
+
+    /// Reads the signed-in order history (last 30 days). Read-only: nothing is clicked.
+    func fetchOrders(completion: @escaping (Result<[AmazonOrder], Error>) -> Void) {
+        pendingOrders = (0, completion)
+        show(URL(string: "https://www.amazon.co.jp/your-orders/orders?timeFilter=last30")!)
+        scheduleOrdersRead(after: 1.2)
+    }
+
+    private func scheduleOrdersRead(after delay: Double) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.readOrders() }
+    }
+
+    private func readOrders() {
+        guard let webView, var pending = pendingOrders else { return }
+        pending.attempts += 1
+        pendingOrders = pending
+        let script = #"""
+        (() => {
+          const clean = value => (value || '').replace(/[ \t]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+          const signin = /\/ap\/signin|captcha|auth-challenge/i.test(location.href) ? 1 : 0;
+          const account = clean(document.querySelector('#nav-link-accountList-nav-line-1')?.textContent || '');
+          let cards = [...document.querySelectorAll('.order-card, .js-order-card, .order, [class*="order-card"]')];
+          cards = cards.filter(card => !cards.some(other => other !== card && other.contains(card)));
+          const orders = cards.slice(0, 12).map(card => {
+            const titles = [...card.querySelectorAll('.yohtmlc-product-title, a[href*="/dp/"], a[href*="/gp/product/"]')]
+              .map(e => clean(e.innerText)).filter(t => t.length > 2 && !/^(再度購入|商品の詳細|レビュー|返品|問題を報告|注文内容を表示|領収書|配送状況を確認)/.test(t));
+            return {text: clean(card.innerText).slice(0, 1500), items: [...new Set(titles)].slice(0, 5)};
+          });
+          const empty = /注文はありません|ご注文はまだありません/.test(clean(document.body?.innerText)) ? 1 : 0;
+          return {signin, account, orders, empty};
+        })()
+        """#
+        webView.evaluateJavaScript(script) { [weak self] value, _ in
+            Task { @MainActor in
+                guard let self, let current = self.pendingOrders else { return }
+                guard let row = value as? [String: Any] else {
+                    if current.attempts < 8 { self.scheduleOrdersRead(after: 0.8) } else { self.finishOrders(.failure(SessionError.unreadable)) }
+                    return
+                }
+                let account = row["account"] as? String ?? ""
+                if ((row["signin"] as? NSNumber)?.intValue ?? 0) == 1 || account.contains("ログイン") { self.finishOrders(.failure(SessionError.notLoggedIn)); return }
+                let cards = row["orders"] as? [[String: Any]] ?? []
+                let orders = cards.compactMap { AmazonOrder.parse(text: $0["text"] as? String ?? "", items: $0["items"] as? [String] ?? []) }
+                if orders.isEmpty {
+                    if ((row["empty"] as? NSNumber)?.intValue ?? 0) == 1 { self.finishOrders(.success([])); return }
+                    if current.attempts < 8 { self.scheduleOrdersRead(after: 0.8) } else { self.finishOrders(.failure(SessionError.unreadable)) }
+                    return
+                }
+                self.finishOrders(.success(orders))
+            }
+        }
+    }
+
+    private func finishOrders(_ result: Result<[AmazonOrder], Error>) {
+        guard let completion = pendingOrders?.completion else { return }
+        pendingOrders = nil
         completion(result)
     }
 
@@ -333,6 +425,7 @@ final class AmazonSessionWindowController: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         if pendingQuote != nil { scheduleQuoteRead(after: 0.4) }
         if pendingCheckout != nil { scheduleCheckout(after: 0.4) }
+        if pendingOrders != nil { scheduleOrdersRead(after: 0.6) }
     }
 
     private func ensureWindow() -> WKWebView {

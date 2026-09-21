@@ -9,6 +9,7 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         let tests = ChappieTests()
         tests.testWakeAndSameUtterance()
         tests.testVoiceRenewalDelay()
+        tests.testVoiceLogExcerpt()
         tests.testPurchaseLimitsAndDuplicates()
         tests.testLookalikeAndInvalidRules()
         tests.testProductNameMatching()
@@ -29,6 +30,11 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         tests.testGarbageCalendar()
         tests.testGarbageQuestions()
         print("PASS: wake phrase, recognition backoff, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking, order status, garbage calendar")
+    }
+    func testVoiceLogExcerpt() {
+        XCTAssertEqual(VoiceLog.excerpt("チャッピー"), "チャッピー")
+        let long = String(repeating: "あ", count: 50)
+        XCTAssertEqual(VoiceLog.excerpt(long), String(repeating: "あ", count: 40) + "…")
     }
     func testVoiceRenewalDelay() {
         // A task that errors right after starting is retried slowly; a normal final result or a late error is renewed at once.

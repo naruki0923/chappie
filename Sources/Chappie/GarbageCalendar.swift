@@ -10,7 +10,8 @@ enum GarbageKind: String, CaseIterable, Equatable {
     case landfill = "埋立ごみ"
     case mercury = "水銀ごみ"
 
-    var deadline: String { self == .burnable ? "午前7時" : "午前8時" }
+    var deadlineHour: Int { self == .burnable ? 7 : 8 }
+    var deadline: String { "午前\(deadlineHour)時" }
 
     var howToPutOut: String {
         switch self {
@@ -52,7 +53,7 @@ enum GarbageKind: String, CaseIterable, Equatable {
         ("スチール缶", .metalGlass), ("アルミ缶", .metalGlass), ("空き缶", .metalGlass), ("缶", .metalGlass), ("スプレー缶", .metalGlass), ("カセットボンベ", .metalGlass),
         ("包丁", .metalGlass), ("刃物", .metalGlass), ("フライパン", .metalGlass), ("やかん", .metalGlass), ("なべ", .metalGlass), ("鍋", .metalGlass),
         ("埋立ごみ", .landfill), ("埋立ゴミ", .landfill), ("埋め立て", .landfill), ("埋立", .landfill),
-        ("乾電池", .landfill), ("陶磁器", .landfill), ("茶碗", .landfill), ("植木鉢", .landfill), ("土なべ", .landfill), ("ブロック", .landfill), ("レンガ", .landfill),
+        ("乾電池", .landfill), ("電池", .landfill), ("陶磁器", .landfill), ("茶碗", .landfill), ("植木鉢", .landfill), ("土なべ", .landfill), ("ブロック", .landfill), ("レンガ", .landfill),
         ("水銀ごみ", .mercury), ("水銀ゴミ", .mercury), ("水銀", .mercury), ("蛍光灯", .mercury), ("電球", .mercury), ("体温計", .mercury), ("ボタン電池", .mercury), ("ボタン型電池", .mercury)
     ]
 
@@ -131,6 +132,13 @@ struct GarbageCalendar {
         return result
     }
 
+    /// 粗大ごみ申込期間（収集期間ではない）。区分Dは萱町6丁目、衣山1丁目、平和通5丁目、木屋町1・2丁目、吉藤2丁目、Cはそれ以外。
+    static let bulkyApplicationPeriods: [(area: String, periods: [String])] = [
+        ("C", ["4/1〜4/14", "6/3〜6/16", "7/29〜8/11", "9/30〜10/13", "11/25〜12/8", "2/3〜2/16"]),
+        ("D", ["4/15〜4/28", "6/17〜6/30", "8/19〜9/1", "10/14〜10/27", "12/9〜12/22", "2/17〜3/2"])
+    ]
+    static let bulkyAreaD = "萱町6丁目、衣山1丁目、平和通5丁目、木屋町1丁目と2丁目、吉藤2丁目"
+
     /// 松山市 清水地区「2026年度 ごみカレンダー」(2026年4月〜2027年3月)。
     /// 10月7日と年始（1/1〜1/3）は収集なし。
     static let shimizu2026 = GarbageCalendar(area: "松山市 清水地区", start: "2026-04-01", end: "2027-04-01", months: [
@@ -181,10 +189,32 @@ extension GarbageCalendar {
         }
 
         switch question {
+        case .bulky:
+            guard covers(today) else { return outOfRange() }
+            var lines = ["粗大ごみは集積場所には出せません。戸別収集（年6回）で、専用のハガキかインターネットでの事前申込みが必要です。収集日は午前8時までに。"]
+            for entry in Self.bulkyApplicationPeriods {
+                lines.append("申込期間（区分\(entry.area)）：" + entry.periods.joined(separator: "、"))
+            }
+            lines.append("区分Dは\(Self.bulkyAreaD)、それ以外は区分Cです。申込期間は収集期間ではありません。詳しくは「粗大ごみ収集申込みガイド」を見てください。家電4品目やスプリングマットレスは市では収集しません。")
+            return lines.joined(separator: "\n")
+
+        case .rechargeableBattery:
+            return "充電式電池（小型充電式電池・モバイルバッテリーなど）は集積場所には出せません。市役所本館1階、各支所、総合コミュニティセンター、りっくる（まつやまRe・再来館）、清掃課のリサイクルBOXへ持ち込んでください（無料）。事業活動に伴うものは対象外です。"
+
+        case .nonBurnable:
+            guard covers(today) else { return outOfRange() }
+            var lines = ["\(area)に「不燃ごみ」の区分はありません。金物・ガラス類、埋立ごみ（乾電池・陶磁器・植木鉢など）、水銀ごみ（蛍光灯・電球・体温計）に分かれます。"]
+            for kind in [GarbageKind.metalGlass, .landfill, .mercury] { lines.append(nextLine(kind, from: today)) }
+            return lines.joined(separator: "\n")
+
         case .next(let kind, let item):
             guard covers(today) else { return outOfRange() }
             var lines = [nextLine(kind, from: today), "\(kind.rule)、\(kind.deadline)までに。\(kind.howToPutOut)。"]
-            if let item { lines.insert("\(item)は\(kind.rawValue)です。", at: 0) }
+            if let item {
+                lines.insert("\(item)は\(kind.rawValue)です。", at: 0)
+                // "電池" covers three routes on the sheet; name the other two.
+                if item.hasSuffix("電池"), kind == .landfill { lines.insert("ボタン型電池は水銀ごみ、充電式電池は市の施設のリサイクルBOXへ。", at: 1) }
+            }
             return lines.joined(separator: "\n")
 
         case .days(let start, let end, let label, let kind):
@@ -197,6 +227,13 @@ extension GarbageCalendar {
                     lines.append("\(when)はごみ収集はありません（休止）。")
                 } else if let collected = day.kind {
                     lines.append("\(when)は\(collected.rawValue)の日です。\(collected.deadline)までに、\(collected.howToPutOut)。")
+                    // Asked after the truck has been: say so, and when that kind comes round again.
+                    if day.date == today, calendar.component(.hour, from: now) >= collected.deadlineHour {
+                        let later = nextDates(of: collected, from: calendar.date(byAdding: .day, value: 1, to: today)!, count: 1, calendar: calendar)
+                        var note = "今日の\(collected.deadline)はもう過ぎています。"
+                        if let later = later.first { note += "次の\(collected.rawValue)は\(name(later))、\(relative(later))です。" }
+                        lines.append(note)
+                    }
                 } else {
                     lines.append("\(when)はごみの収集はありません。")
                 }

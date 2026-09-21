@@ -439,8 +439,25 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         XCTAssertEqual(Intent.garbageQuestion("可燃ごみは次いつ？", now: now), .next(.burnable, item: nil))
         XCTAssertEqual(Intent.garbageQuestion("プラスチックのゴミの日", now: now), .next(.plastic, item: nil))
         XCTAssertEqual(Intent.garbageQuestion("段ボールはいつ出す？", now: now), .next(.paper, item: "段ボール"))
+        XCTAssertEqual(Intent.garbageQuestion("プラの日は？", now: now), .next(.plastic, item: nil))
+        XCTAssertEqual(Intent.garbageQuestion("電池はどう捨てる？", now: now), .next(.landfill, item: "電池"))
+        XCTAssertEqual(Intent.garbageQuestion("ボタン電池はいつ？", now: now), .next(.mercury, item: "ボタン電池"))
+        XCTAssertEqual(Intent.garbageQuestion("充電式電池はいつ？", now: now), .rechargeableBattery)
+        XCTAssertEqual(Intent.garbageQuestion("モバイルバッテリーの捨て方", now: now), .rechargeableBattery)
+        XCTAssertTrue(GarbageCalendar.shimizu2026.answer(.rechargeableBattery, now: now).contains("リサイクルBOX"))
+        XCTAssertEqual(Intent.garbageQuestion("粗大ゴミはいつ？", now: now), .bulky)
+        XCTAssertEqual(Intent.garbageQuestion("粗大ごみの出し方", now: now), .bulky)
+        XCTAssertEqual(Intent.garbageQuestion("不燃ごみは？", now: now), .nonBurnable)
+        XCTAssertEqual(Intent.garbageQuestion("燃えないゴミはいつ？", now: now), .nonBurnable)
+        XCTAssertEqual(Intent.garbageQuestion("空き缶はいつ出せる？", now: now), .next(.metalGlass, item: "空き缶"))
+        XCTAssertEqual(Intent.garbageQuestion("年末年始のゴミ", now: now), .days(start: date("2026-12-28 00:00"), end: date("2027-01-09 00:00"), label: "年末年始", kind: nil))
+        XCTAssertEqual(Intent.garbageQuestion("お正月のごみ収集", now: date("2027-01-02 10:00")), .days(start: date("2026-12-28 00:00"), end: date("2027-01-09 00:00"), label: "年末年始", kind: nil))
+        XCTAssertEqual(Intent.garbageQuestion("来月のゴミ", now: now), .days(start: date("2026-10-01 00:00"), end: date("2026-11-01 00:00"), label: "来月", kind: nil))
         XCTAssertEqual(Intent.garbageQuestion("ゴミの日教えて", now: now), .days(start: today, end: d(7), label: "今日から1週間", kind: nil))
-        for text in ["今日の予定", "旅行のプランを考えて", "ゴミ箱を買って", "ゴミ袋注文して", "缶ビールいつ届く？", "ペットの餌", "シャンプー買って", "明日15時に会議を入れて"] {
+        XCTAssertEqual(Intent.garbageQuestion("ゴミの日教えてお願い", now: now), .days(start: today, end: d(7), label: "今日から1週間", kind: nil))
+        XCTAssertTrue(Intent.isCalendarAddition("明日8時にゴミ出しを入れて"))
+        for text in ["今日の予定", "旅行のプランを考えて", "ゴミ箱を買って", "ゴミ袋注文して", "ゴミ袋欲しい", "ゴミ箱お願い", "缶ビールいつ届く？", "電池いつ届く？", "ペットボトルの水は配送された？", "ペットの餌", "シャンプー買って", "明日15時に会議を入れて",
+                     "明日8時にゴミ出しを入れて", "ゴミの日を予定に入れて", "ゴミ出しの予定を消して", "ゴミ出しを金曜にずらして"] {
             XCTAssertNil(Intent.garbageQuestion(text, now: now))
         }
         // Garbage questions must win over the calendar lookup that "予定" would trigger.
@@ -466,5 +483,34 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         XCTAssertTrue(week.contains("9/23(水)  埋立ごみ（午前8時まで）"))
         XCTAssertTrue(week.contains("9/25(金)  可燃ごみ（午前7時まで）"))
         XCTAssertTrue(sheet.answer(.days(start: date("2027-04-05 00:00"), end: date("2027-04-06 00:00"), label: "", kind: nil), now: now).contains("2026年4月〜2027年3月分だけ"))
+        // After 8:00 on a プラ day the deadline has passed; before it, nothing is added.
+        let late = sheet.answer(.days(start: today, end: d(1), label: "今日", kind: nil), now: date("2026-09-21 09:30"))
+        XCTAssertTrue(late.contains("今日の午前8時はもう過ぎています。次のプラスチック製容器包装は9/28(月)、7日後です。"))
+        let early = sheet.answer(.days(start: today, end: d(1), label: "今日", kind: nil), now: date("2026-09-21 06:30"))
+        XCTAssertFalse(early.contains("過ぎています"))
+        // Year end: the three suspended days are listed, and the range spills into 2027 with the year spoken.
+        let yearEnd = sheet.answer(.days(start: date("2026-12-28 00:00"), end: date("2027-01-09 00:00"), label: "年末年始", kind: nil), now: now)
+        XCTAssertTrue(yearEnd.contains("12/31(木)  紙類（午前8時まで）"))
+        XCTAssertTrue(yearEnd.contains("2027/1/1(金)  収集なし（休止）"))
+        XCTAssertTrue(yearEnd.contains("2027/1/3(日)  収集なし（休止）"))
+        XCTAssertTrue(yearEnd.contains("2027/1/4(月)  プラスチック製容器包装（午前8時まで）"))
+        // A range past March 2027 is cut at the calendar's end and says so.
+        let march = sheet.answer(.days(start: date("2027-03-29 00:00"), end: date("2027-04-05 00:00"), label: "今週", kind: nil), now: date("2027-03-29 10:00"))
+        XCTAssertTrue(march.contains("3/30(火)  可燃ごみ（午前7時まで）"))
+        XCTAssertTrue(march.contains("2027年4月以降はカレンダーがありません。"))
+        XCTAssertFalse(march.contains("4/2"))
+        XCTAssertTrue(sheet.answer(.bulky, now: date("2027-04-10 10:00")).contains("2026年4月〜2027年3月分だけ"))
+        let bulky = sheet.answer(.bulky, now: now)
+        XCTAssertTrue(bulky.contains("事前申込み"))
+        XCTAssertTrue(bulky.contains("申込期間（区分C）：4/1〜4/14、6/3〜6/16、7/29〜8/11、9/30〜10/13、11/25〜12/8、2/3〜2/16"))
+        XCTAssertTrue(bulky.contains("申込期間（区分D）：4/15〜4/28、6/17〜6/30、8/19〜9/1、10/14〜10/27、12/9〜12/22、2/17〜3/2"))
+        let battery = sheet.answer(.next(.landfill, item: "電池"), now: now)
+        XCTAssertTrue(battery.hasPrefix("電池は埋立ごみです。\nボタン型電池は水銀ごみ、充電式電池は市の施設のリサイクルBOXへ。\n次の埋立ごみは9/23(水)、明後日です。"))
+        XCTAssertFalse(sheet.answer(.next(.mercury, item: "ボタン電池"), now: now).contains("リサイクルBOX"))
+        let nonBurnable = sheet.answer(.nonBurnable, now: now)
+        XCTAssertTrue(nonBurnable.contains("「不燃ごみ」の区分はありません"))
+        XCTAssertTrue(nonBurnable.contains("次の金物・ガラス類は10/1(木)、10日後です。"))
+        XCTAssertTrue(nonBurnable.contains("次の埋立ごみは9/23(水)、明後日です。"))
+        XCTAssertTrue(nonBurnable.contains("次の水銀ごみは12/9(水)、79日後です。"))
     }
 }

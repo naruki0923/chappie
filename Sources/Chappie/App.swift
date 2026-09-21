@@ -143,7 +143,7 @@ struct CompanionView: View {
             if model.expanded {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Circle().fill(voice.enabled ? Color.green : Color.gray).frame(width: 7, height: 7)
+                        Circle().fill(voice.enabled ? (voice.degraded ? Color.orange : Color.green) : Color.gray).frame(width: 7, height: 7)
                         Text("チャッピー").font(.system(size: 15, weight: .bold, design: .rounded))
                         Spacer()
                         Button { settings.toggle() } label: { Image(systemName: "slider.horizontal.3") }.help("設定")

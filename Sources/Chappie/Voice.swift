@@ -34,6 +34,8 @@ final class Voice: ObservableObject {
     @Published var status = "音声をオンにすると呼びかけを待ちます"
     @Published var transcript = ""
     @Published var receiving = false
+    /// Voice is on but the microphone is not delivering audio right now (device switching, wake from sleep); a retry is pending.
+    @Published private(set) var degraded = false
     var onCommand: ((String) -> Void)?
     var onWake: (() -> Void)?
     var suppressed = false
@@ -97,9 +99,10 @@ final class Voice: ObservableObject {
         enabled = false
         timeout?.cancel(); watchdog?.cancel(); retry?.cancel(); retry = nil
         tearDownAudio()
-        receiving = false; transcript = ""; status = "音声オフ"
+        receiving = false; transcript = ""; degraded = false; status = "音声オフ"
     }
     private func tearDownAudio() {
+        degraded = true
         generation += 1
         renewal?.cancel(); silence?.cancel()
         task?.cancel(); task = nil
@@ -184,15 +187,15 @@ final class Voice: ObservableObject {
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in req.append(buffer); beat.last = Date() }
         installed = true
         do { engine.prepare(); try engine.start() } catch { fail("マイクを開始できません: \(error.localizedDescription)"); return }
-        if !receiving { status = "「チャッピー」で呼んでね" }
+        degraded = false
+        status = receiving ? "聞いています…" : "「チャッピー」で呼んでね"
         let startedAt = Date()
         task = recognizer?.recognitionTask(with: req) { [weak self] result, error in
             Task { @MainActor in
                 guard let self, self.enabled, self.generation == current else { return }
                 if let result { self.consume(result.bestTranscription.formattedString) }
                 if error != nil || result?.isFinal == true {
-                    // An error right after starting means recognition itself is unavailable; back off instead of spinning.
-                    let delay: UInt64 = error != nil && Date().timeIntervalSince(startedAt) < 1 ? 2_000_000_000 : 100_000_000
+                    let delay = Self.renewalDelay(afterError: error != nil, elapsed: Date().timeIntervalSince(startedAt))
                     self.renewal?.cancel()
                     self.renewal = Task {
                         try? await Task.sleep(nanoseconds: delay)
@@ -209,6 +212,10 @@ final class Voice: ObservableObject {
             guard !Task.isCancelled, let self, !self.receiving else { return }
             self.restart()
         }
+    }
+    /// An error within a second of starting means recognition itself is unavailable; back off instead of spinning.
+    nonisolated static func renewalDelay(afterError: Bool, elapsed: TimeInterval) -> UInt64 {
+        afterError && elapsed < 1 ? 2_000_000_000 : 100_000_000
     }
     private func consume(_ text: String) {
         guard !suppressed else { return }

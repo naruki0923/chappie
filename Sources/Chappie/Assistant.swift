@@ -13,7 +13,7 @@ private struct PendingPurchase {
 @MainActor
 final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published var input = ""
-    @Published var answer = "こんにちは、チャッピーです。\n予定の確認・追加・変更、リマインド、登録商品の購入、旅行や会食のプラン提案と予約の段取り、Gmailの確認と下書き、調べもの、ファイル探しを手伝います。"
+    @Published var answer = "こんにちは、チャッピーです。\n予定の確認・追加・変更、リマインド、ごみの収集日、登録商品の購入、旅行や会食のプラン提案と予約の段取り、Gmailの確認と下書き、調べもの、ファイル探しを手伝います。"
     @Published var busy = false
     @Published var files: [FileHit] = []
     @Published var readAloud = true
@@ -72,6 +72,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if let mail = Intent.mailRequest(text) { research(text, mail: mail); return }
         if Intent.isBookingRequest(text) { booking(text); return }
         if let term = Intent.fileSearchTerm(text) { searchFiles(term); return }
+        if let question = Intent.garbageQuestion(text) { reply(GarbageCalendar.shimizu2026.answer(question)); return }
         if let edit = Intent.calendarEdit(text) { Task { await applyCalendarEdit(edit) }; return }
         if Intent.isCalendarAddition(text) { Task { await addEvent(text) }; return }
         if Intent.isCalendarLookup(text) { Task { await schedule(text) }; return }

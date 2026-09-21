@@ -49,6 +49,7 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
 - 予定の変更・削除・空き時間（`Intent.calendarEdit`）：「を」の左を対象（日付語で検索範囲、残りを題名ヒント、「10時の」で開始時刻を絞る）、右を新しい日時（絶対／時刻のみ／日付のみ／「30分後ろ」の相対）。`Assistant.resolve`が1件に絞れたときだけ変更・削除し、複数なら候補を返す。空き時間は9〜18時で既定60分
 - リマインド（`Intent.reminderDraft`）：相対時間「30分後」「あと10分」はMac内で計算、絶対時刻はNSDataDetector。時刻なしは9:00。`Assistant.addReminder`がUserDefaults（`chappieReminders`）に保存し、20秒ごとの`startReminderClock`で期限到来を読み上げ。同時にEKReminder（アラーム付き）を既定リストへ保存してiPhone/Watchに届ける。1時間以上前に過ぎたものは読み上げない
 - 一般質問の子プロセスは `--strict-mcp-config --mcp-config {空}` でユーザーのclaude.aiコネクター（Google Calendar・Gmail等）を隠す。予定・リマインドはApple製アプリのみ、と本文プロンプトにも明記
+- ごみの収集日（`Intent.garbageQuestion` → `GarbageCalendar.shimizu2026.answer`）：松山市 清水地区「2026年度 ごみカレンダー」PDFの収集日を `GarbageCalendar.swift` に月ごとの「日＋記号」で書き写した（可 プ 紙 金 ペ 埋 水、休＝収集なし）。「今日/明日/明後日/今週/来週/○曜/10月7日 のゴミ」は `.days`、「ペットボトルはいつ」「蛍光灯は何ゴミ」のように種類や品目を挙げたら `.next(kind, item:)` で直近2回の収集日と出し方（時刻・袋）を返す。品目→種類の対応は `GarbageKind.aliases`。「ゴミ袋買って」は購入、「缶ビールいつ届く」は注文状況に譲る。カレンダー範囲外（2027年4月以降）は「分からない」と答え、曜日ルールから推測しない。年度が替わったら新しいPDFから `shimizu2026` と同じ形で書き写す
 - 会話で商品を登録・変更・削除（`Intent.registrationRequest / ruleChange / isRemovalRequest`）。URLを含む文だけが登録扱いなので音声からは発生しない。既存の同名商品は更新し、酒類の手動レジ設定は引き継ぐ。設定画面にも削除ボタン
 
 ## 2026-09-12の実地確認
@@ -68,6 +69,7 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
 - `Sources/Chappie/Intent.swift`: 命令の振り分け判定（購入語、承認/中止、予定の読み取り/追加、日時解釈、ファイル検索語）。Foundationのみで単体テスト対象
 - `Sources/Chappie/Assistant.swift`: 振り分けの実行、会話、購入確認、予定の読み取り・追加、ファイル検索、調査
 - `Sources/Chappie/AmazonSession.swift`: Amazon専用画面、価格取得、レジ、注文確定、完了確認
+- `Sources/Chappie/GarbageCalendar.swift`: ごみの種類・出し方・清水地区2026年度の収集日データと回答文。Foundationのみで単体テスト対象
 - `Sources/Chappie/PurchaseRules.swift`: 商品登録、曖昧一致、購入上限、連続購入防止
 - `Sources/Chappie/Voice.swift`: ウェイクワードと音声認識状態
 - `Sources/Chappie/App.swift`: メインUI・設定画面・ロボット描画・起動オプション

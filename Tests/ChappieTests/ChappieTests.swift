@@ -25,7 +25,9 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         tests.testMailRequests()
         tests.testBooking()
         tests.testOrderStatus()
-        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking, order status")
+        tests.testGarbageCalendar()
+        tests.testGarbageQuestions()
+        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking, order status, garbage calendar")
     }
     func testWakeAndSameUtterance() {
         XCTAssertEqual(WakePhrase.command(in: "ねえチャッピー、今日の予定"), "今日の予定")
@@ -354,5 +356,115 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         let cancelled = AmazonOrder.parse(text: "注文日\n2026年9月12日\n注文番号 249-0000000-0000001\nキャンセル済み\n注文はキャンセルされました。 この注文の請求は行われていません。\nシャンプー", items: ["シャンプー"])
         XCTAssertEqual(cancelled?.status, "キャンセル済み")
         XCTAssertEqual(cancelled?.totalYen, 0)
+    }
+
+    private func date(_ text: String) -> Date {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.date(from: text)!
+    }
+    func testGarbageCalendar() {
+        let sheet = GarbageCalendar.shimizu2026
+        // Spot checks against the printed 清水地区 calendar.
+        XCTAssertEqual(sheet.kind(on: date("2026-09-21 09:00")), .plastic)
+        XCTAssertEqual(sheet.kind(on: date("2026-09-22 00:00")), .burnable)
+        XCTAssertEqual(sheet.kind(on: date("2026-09-23 00:00")), .landfill)
+        XCTAssertEqual(sheet.kind(on: date("2026-09-24 00:00")), .paper)
+        XCTAssertEqual(sheet.kind(on: date("2026-09-09 00:00")), .mercury)
+        XCTAssertEqual(sheet.kind(on: date("2026-10-01 00:00")), .metalGlass)
+        XCTAssertEqual(sheet.kind(on: date("2026-10-21 00:00")), .petBottle)
+        XCTAssertEqual(sheet.kind(on: date("2026-12-31 00:00")), .paper)
+        XCTAssertNil(sheet.kind(on: date("2026-09-20 00:00")))       // Sunday
+        XCTAssertNil(sheet.kind(on: date("2026-10-07 00:00")))       // 収集なし
+        XCTAssertTrue(sheet.isSuspended(date("2026-10-07 00:00")))
+        XCTAssertTrue(sheet.isSuspended(date("2027-01-01 00:00")))
+        XCTAssertTrue(sheet.isSuspended(date("2027-01-03 00:00")))
+        XCTAssertFalse(sheet.isSuspended(date("2026-09-21 00:00")))
+        XCTAssertTrue(sheet.covers(date("2026-04-01 00:00")))
+        XCTAssertTrue(sheet.covers(date("2027-03-31 23:00")))
+        XCTAssertFalse(sheet.covers(date("2027-04-01 00:00")))
+        XCTAssertFalse(sheet.covers(date("2026-03-31 00:00")))
+        // Every printed weekday carries one mark, and the weekly rules hold.
+        var day = sheet.coverageStart
+        var counts: [GarbageKind: Int] = [:]
+        while day < sheet.coverageEnd {
+            let weekday = Calendar.current.component(.weekday, from: day)
+            if let kind = sheet.kind(on: day) {
+                counts[kind, default: 0] += 1
+                switch kind {
+                case .burnable: XCTAssertTrue(weekday == 3 || weekday == 6)
+                case .plastic: XCTAssertEqual(weekday, 2)
+                case .paper, .metalGlass: XCTAssertEqual(weekday, 5)
+                case .petBottle, .landfill, .mercury: XCTAssertEqual(weekday, 4)
+                }
+            } else {
+                // Only weekends, suspended days, and Wednesdays without a monthly pickup are blank.
+                XCTAssertTrue(weekday == 1 || weekday == 7 || weekday == 4 || sheet.isSuspended(day))
+            }
+            day = Calendar.current.date(byAdding: .day, value: 1, to: day)!
+        }
+        XCTAssertEqual(counts[.plastic], 52)
+        XCTAssertEqual(counts[.mercury], 4)
+        XCTAssertEqual(counts[.landfill], 12)
+        XCTAssertEqual(counts[.petBottle], 23)   // 24 minus the 10/7 suspension
+        XCTAssertEqual((counts[.paper] ?? 0) + (counts[.metalGlass] ?? 0), 52)
+        var thursday = date("2026-04-02 00:00")
+        while thursday < sheet.coverageEnd {
+            let following = Calendar.current.date(byAdding: .day, value: 7, to: thursday)!
+            if following < sheet.coverageEnd { XCTAssertTrue(sheet.kind(on: thursday) != sheet.kind(on: following)) }
+            thursday = following
+        }
+        // The next PET day after 10/6 skips the suspended 10/7.
+        let pet = sheet.nextDates(of: .petBottle, from: date("2026-10-06 12:00"))
+        XCTAssertEqual(pet.map { GarbageCalendar.key($0) }, ["2026-10-21", "2026-11-04"])
+        XCTAssertEqual(sheet.nextDates(of: .mercury, from: date("2026-09-21 12:00")).map { GarbageCalendar.key($0) }, ["2026-12-09", "2027-03-10"])
+        XCTAssertEqual(sheet.nextDates(of: .burnable, from: date("2027-03-30 12:00")).map { GarbageCalendar.key($0) }, ["2027-03-30"])
+    }
+    func testGarbageQuestions() {
+        let now = date("2026-09-21 10:00")   // Monday, プラ day
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: now)
+        func d(_ offset: Int) -> Date { cal.date(byAdding: .day, value: offset, to: today)! }
+        XCTAssertEqual(Intent.garbageQuestion("今日は何のゴミの日？", now: now), .days(start: today, end: d(1), label: "今日", kind: nil))
+        XCTAssertEqual(Intent.garbageQuestion("明日のごみは？", now: now), .days(start: d(1), end: d(2), label: "明日", kind: nil))
+        XCTAssertEqual(Intent.garbageQuestion("明日は可燃ごみ？", now: now), .days(start: d(1), end: d(2), label: "明日", kind: .burnable))
+        XCTAssertEqual(Intent.garbageQuestion("今週のゴミ収集", now: now), .days(start: today, end: d(7), label: "今週", kind: nil))
+        XCTAssertEqual(Intent.garbageQuestion("水曜のゴミは何？", now: now), .days(start: d(2), end: d(3), label: "水曜日", kind: nil))
+        XCTAssertEqual(Intent.garbageQuestion("来週の火曜はゴミ何？", now: now), .days(start: d(8), end: d(9), label: "火曜日", kind: nil))
+        XCTAssertEqual(Intent.garbageQuestion("10月7日のゴミは？", now: now), .days(start: date("2026-10-07 00:00"), end: date("2026-10-08 00:00"), label: "", kind: nil))
+        XCTAssertEqual(Intent.garbageQuestion("ペットボトルはいつ？", now: now), .next(.petBottle, item: nil))
+        XCTAssertEqual(Intent.garbageQuestion("次の紙類のゴミの日は？", now: now), .next(.paper, item: nil))
+        XCTAssertEqual(Intent.garbageQuestion("蛍光灯は何ゴミ？", now: now), .next(.mercury, item: "蛍光灯"))
+        XCTAssertEqual(Intent.garbageQuestion("乾電池はいつ出せる？", now: now), .next(.landfill, item: "乾電池"))
+        XCTAssertEqual(Intent.garbageQuestion("ペットボトルのキャップはどのゴミ？", now: now), .next(.plastic, item: "ペットボトルのキャップ"))
+        XCTAssertEqual(Intent.garbageQuestion("可燃ごみは次いつ？", now: now), .next(.burnable, item: nil))
+        XCTAssertEqual(Intent.garbageQuestion("プラスチックのゴミの日", now: now), .next(.plastic, item: nil))
+        XCTAssertEqual(Intent.garbageQuestion("段ボールはいつ出す？", now: now), .next(.paper, item: "段ボール"))
+        XCTAssertEqual(Intent.garbageQuestion("ゴミの日教えて", now: now), .days(start: today, end: d(7), label: "今日から1週間", kind: nil))
+        for text in ["今日の予定", "旅行のプランを考えて", "ゴミ箱を買って", "ゴミ袋注文して", "缶ビールいつ届く？", "ペットの餌", "シャンプー買って", "明日15時に会議を入れて"] {
+            XCTAssertNil(Intent.garbageQuestion(text, now: now))
+        }
+        // Garbage questions must win over the calendar lookup that "予定" would trigger.
+        XCTAssertNotNil(Intent.garbageQuestion("明日のゴミの予定", now: now))
+
+        let sheet = GarbageCalendar.shimizu2026
+        let todayAnswer = sheet.answer(.days(start: today, end: d(1), label: "今日", kind: nil), now: now)
+        XCTAssertTrue(todayAnswer.contains("今日（9/21(月)）はプラスチック製容器包装の日です。午前8時までに"))
+        let sunday = sheet.answer(.days(start: d(6), end: d(7), label: "日曜日", kind: nil), now: now)
+        XCTAssertTrue(sunday.contains("ごみの収集はありません"))
+        XCTAssertTrue(sunday.contains("次の収集は9/28(月)のプラスチック製容器包装です。"))
+        let suspended = sheet.answer(.days(start: date("2026-10-07 00:00"), end: date("2026-10-08 00:00"), label: "", kind: nil), now: now)
+        XCTAssertTrue(suspended.hasPrefix("10/7(水)はごみ収集はありません（休止）。"))
+        let notThatDay = sheet.answer(.days(start: d(1), end: d(2), label: "明日", kind: .petBottle), now: now)
+        XCTAssertTrue(notThatDay.contains("明日（9/22(火)）は可燃ごみの日です。午前7時までに"))
+        XCTAssertTrue(notThatDay.contains("次のペットボトルは10/21(水)、30日後です。その次は11/4(水)。"))
+        let next = sheet.answer(.next(.mercury, item: "蛍光灯"), now: now)
+        XCTAssertTrue(next.hasPrefix("蛍光灯は水銀ごみです。\n"))
+        XCTAssertTrue(next.contains("次の水銀ごみは12/9(水)、79日後です。その次は2027/3/10(水)。"))
+        XCTAssertTrue(next.contains("6・9・12・3月の第2水曜、午前8時までに。"))
+        let week = sheet.answer(.days(start: today, end: d(7), label: "今週", kind: nil), now: now)
+        XCTAssertTrue(week.contains("9/21(月)  プラスチック製容器包装（午前8時まで）"))
+        XCTAssertTrue(week.contains("9/23(水)  埋立ごみ（午前8時まで）"))
+        XCTAssertTrue(week.contains("9/25(金)  可燃ごみ（午前7時まで）"))
+        XCTAssertTrue(sheet.answer(.days(start: date("2027-04-05 00:00"), end: date("2027-04-06 00:00"), label: "", kind: nil), now: now).contains("2026年4月〜2027年3月分だけ"))
     }
 }

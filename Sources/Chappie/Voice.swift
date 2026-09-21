@@ -22,8 +22,13 @@ struct WakePhrase {
 enum VoiceLog {
     static let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/Chappie/voice.log")
     private static let limit = 1_000_000
+    private static let clock: DateFormatter = {
+        let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX"); formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"; return formatter
+    }()
+    /// Spoken text is logged only by its first characters: enough to see that a wake was heard, not what was said.
+    static func excerpt(_ text: String) -> String { text.count > 40 ? String(text.prefix(40)) + "…" : text }
     static func write(_ message: String) {
-        let line = "\(Date().formatted(.iso8601)) \(message)\n"
+        let line = "\(clock.string(from: Date())) \(message)\n"
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > limit,
@@ -61,7 +66,10 @@ final class Voice: ObservableObject {
     @Published private(set) var degraded = false
     var onCommand: ((String) -> Void)?
     var onWake: (() -> Void)?
-    var suppressed = false
+    /// Set by the assistant while it is busy or speaking; wake phrases are ignored until it clears.
+    var suppressed = false {
+        didSet { if oldValue != suppressed { VoiceLog.write(suppressed ? "suppressed (busy or speaking)" : "unsuppressed") } }
+    }
     private let engine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
     private let heartbeat = Heartbeat()
@@ -76,6 +84,7 @@ final class Voice: ObservableObject {
     private var generation = 0
     private var lastStart = Date.distantPast
     private var retryScheduledAt = Date.distantPast
+    private var notificationRestartAt = Date.distantPast
     private var installed = false
     private var requesting = false
     private var wakeSeen = false
@@ -95,13 +104,20 @@ final class Voice: ObservableObject {
         requesting = true
         defer { requesting = false }
         guard let recognizer, recognizer.supportsOnDeviceRecognition else {
+            VoiceLog.write("start refused: on-device Japanese recognition unavailable")
             status = "日本語の端末内音声認識が利用できません。文字入力をご利用ください。"; return
         }
         let authorization = await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
         }
-        guard authorization == .authorized else { status = "システム設定でチャッピーの音声認識を許可してください"; return }
-        guard await AVCaptureDevice.requestAccess(for: .audio) else { status = "システム設定でチャッピーのマイクを許可してください"; return }
+        guard authorization == .authorized else {
+            VoiceLog.write("start refused: speech recognition permission \(authorization.rawValue)")
+            status = "システム設定でチャッピーの音声認識を許可してください"; return
+        }
+        guard await AVCaptureDevice.requestAccess(for: .audio) else {
+            VoiceLog.write("start refused: microphone permission denied")
+            status = "システム設定でチャッピーのマイクを許可してください"; return
+        }
         enabled = true
         UserDefaults.standard.set(true, forKey: "voiceEnabled")
         VoiceLog.write("start")
@@ -164,6 +180,9 @@ final class Voice: ObservableObject {
         guard sinceStart > 1 else { return }
         // A pending retry already picks up the new device; re-scheduling on every notification would postpone it forever.
         guard retry == nil else { return }
+        // At most one notification-driven restart per 10 s, so a device that keeps renegotiating cannot reset recognition in a loop.
+        guard Date().timeIntervalSince(notificationRestartAt) > 10 else { return }
+        notificationRestartAt = Date()
         status = "マイクを切り替えています…"
         scheduleRestart(after: 0.5)
     }
@@ -263,12 +282,12 @@ final class Voice: ObservableObject {
     private func consume(_ text: String) {
         if suppressed {
             // Partial results repeat the same text many times; log each ignored utterance once.
-            if WakePhrase.command(in: text) != nil, text != lastIgnored { lastIgnored = text; VoiceLog.write("wake ignored while suppressed: \(text)") }
+            if WakePhrase.command(in: text) != nil, text != lastIgnored { lastIgnored = text; VoiceLog.write("wake ignored while suppressed: \(VoiceLog.excerpt(text))") }
             return
         }
         if !receiving {
             guard let wakeCommand = WakePhrase.command(in: text) else { return }
-            VoiceLog.write("wake heard: \(text)")
+            VoiceLog.write("wake heard: \(VoiceLog.excerpt(text))")
             receiving = true; wakeSeen = true; onWake?(); status = "聞いています…"; armTimeout()
             // A wake-only utterance often becomes final before the user starts the
             // actual request. Start a fresh recognition task immediately so the
@@ -294,7 +313,7 @@ final class Voice: ObservableObject {
             try? await Task.sleep(nanoseconds: 1_600_000_000)
             guard !Task.isCancelled, let self, !self.suppressed else { return }
             self.timeout?.cancel(); self.receiving = false; self.wakeSeen = false; self.lastText = ""
-            VoiceLog.write("command: \(command)")
+            VoiceLog.write("command: \(VoiceLog.excerpt(command))")
             self.onCommand?(command)
             self.restart()
         }

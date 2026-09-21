@@ -14,7 +14,7 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
 - インストール: `ditto outputs/chappie/dist/Chappie.app /Applications/Chappie.app`
 - 音声を有効にして起動: `defaults write local.chappie.companion voiceEnabled -bool true && open -a /Applications/Chappie.app --args --enable-voice`
 
-アプリを入れ替える前に、実行中のChappieを終了させます。終了操作で音声設定がオフになる場合があるため、再起動前に上記defaultsを設定してください。
+アプリを入れ替える前に、実行中のChappieを終了させます。メニューの「終了」では音声設定は保持されます（音声をオフにするのは「音声オン」ボタンを押したときだけ）。
 
 ## 実装済み
 

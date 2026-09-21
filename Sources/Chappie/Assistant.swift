@@ -41,7 +41,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
     }
     @objc private func woke() {
-        if voice.enabled { voice.stop(); Task { await voice.start() } }
+        voice.recover()
     }
     func submit(_ provided: String? = nil) {
         let raw = (provided ?? input).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -208,7 +208,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let note = connections.noteURL.isEmpty ? "未登録" : "登録済み"
         return """
         現在のチャッピー設定です。
-        ・呼びかけ認識：\(voice.enabled ? "オン" : "オフ")（「チャッピー」「チャピー」「チャピ」に対応）
+        ・呼びかけ認識：\(voice.enabled ? (voice.degraded ? "オン（マイク再接続中）" : "オン") : "オフ")（「チャッピー」「チャピー」「チャピ」に対応）
         ・音声で返事：\(readAloud ? "オン" : "オフ")
         ・ログイン時に起動：\(loginEnabled ? "オン" : "オフ")
         ・Appleカレンダー：\(calendarStatus)（今日・明日・今週・来週の確認、「明日15時に会議を入れて」で追加）

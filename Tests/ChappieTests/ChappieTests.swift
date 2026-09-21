@@ -8,6 +8,7 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
     @MainActor static func main() {
         let tests = ChappieTests()
         tests.testWakeAndSameUtterance()
+        tests.testVoiceRenewalDelay()
         tests.testPurchaseLimitsAndDuplicates()
         tests.testLookalikeAndInvalidRules()
         tests.testProductNameMatching()
@@ -27,7 +28,13 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         tests.testOrderStatus()
         tests.testGarbageCalendar()
         tests.testGarbageQuestions()
-        print("PASS: wake phrase, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking, order status, garbage calendar")
+        print("PASS: wake phrase, recognition backoff, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking, order status, garbage calendar")
+    }
+    func testVoiceRenewalDelay() {
+        // A task that errors right after starting is retried slowly; a normal final result or a late error is renewed at once.
+        XCTAssertEqual(Voice.renewalDelay(afterError: true, elapsed: 0.2), 2_000_000_000)
+        XCTAssertEqual(Voice.renewalDelay(afterError: true, elapsed: 5), 100_000_000)
+        XCTAssertEqual(Voice.renewalDelay(afterError: false, elapsed: 0.2), 100_000_000)
     }
     func testWakeAndSameUtterance() {
         XCTAssertEqual(WakePhrase.command(in: "ねえチャッピー、今日の予定"), "今日の予定")

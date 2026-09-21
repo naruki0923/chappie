@@ -268,10 +268,16 @@ enum Intent {
         return ["一覧", "何がある", "なにがある", "何が入って", "確認", "見せて", "教えて", "ある？", "ある?"].contains(where: text.contains)
     }
 
+    /// "リマインドを消して" / "リマインダーの時間を変えて": the reminder itself is the object of a
+    /// delete/move verb. "ホテルをキャンセルしてってリマインドして" is still a new reminder.
+    static func isReminderEdit(_ text: String) -> Bool {
+        text.range(of: #"リマイン(ド|ダー)(は|を|の)?[^、。]{0,6}?(消して|削除して|キャンセルして|取り消して|なくして|やめて|変えて|変更して|ずらして|移して)"#, options: .regularExpression) != nil
+    }
+
     /// "段ボール捨てるってリマインダー入れといて" with no time at all: still a reminder
     /// request, so the Assistant asks when instead of sending it to the AI.
     static func isReminderAddition(_ text: String) -> Bool {
-        guard text.contains("リマインド") || text.contains("リマインダー") else { return false }
+        guard text.contains("リマインド") || text.contains("リマインダー"), !isReminderEdit(text) else { return false }
         return (additionWords + ["して", "しといて", "しておいて", "設定", "セット", "お願い"]).contains(where: text.contains)
     }
 
@@ -279,6 +285,8 @@ enum Intent {
     /// resolved here; absolute ones use the system detector. Dates without a time default to 9:00.
     static func reminderDraft(from text: String, now: Date = Date(), calendar: Calendar = .current) -> ReminderDraft? {
         let hasReminderWord = reminderWords.contains(where: text.contains)
+        // "明日のリマインドを消して" asks to remove one; never turn it into a new reminder.
+        guard !isReminderEdit(text) else { return nil }
         var due: Date?
         var consumed: [Range<String.Index>] = []
         var relative = false
@@ -294,21 +302,46 @@ enum Intent {
         } else if hasReminderWord || text.contains("になったら") {
             guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue) else { return nil }
             let nsText = text as NSString
-            guard let match = detector.matches(in: text, range: NSRange(location: 0, length: nsText.length)).first(where: { $0.date != nil }),
-                  var date = match.date, let range = Range(match.range, in: text) else { return nil }
-            let matchedText = nsText.substring(with: match.range)
-            if matchedText.range(of: #"時|:|：|午前|午後|朝|昼|夜|夕方|正午"#, options: .regularExpression) == nil {
-                date = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: date) ?? date
+            if let match = detector.matches(in: text, range: NSRange(location: 0, length: nsText.length)).first(where: { $0.date != nil }),
+               var date = match.date, let range = Range(match.range, in: text) {
+                let matchedText = nsText.substring(with: match.range)
+                let hasTime = matchedText.range(of: #"時|:|：|午前|午後|朝|昼|夜|夕方|正午"#, options: .regularExpression) != nil
+                let hasDay = dateWords.contains(where: matchedText.contains) || matchedText.range(of: #"\d+\s*(月|/|日)"#, options: .regularExpression) != nil
+                if !hasDay, let (day, dayRange) = dayOfMonth(in: text, now: now, calendar: calendar) {
+                    // "23日に9時に": the detector only saw the time, so the day comes from the bare number.
+                    // When the two matches overlap, dayOfMonth has already read that time itself.
+                    if dayRange.overlaps(range) || !hasTime {
+                        date = day
+                    } else {
+                        let time = calendar.dateComponents([.hour, .minute], from: date)
+                        date = calendar.date(bySettingHour: time.hour ?? 9, minute: time.minute ?? 0, second: 0, of: day) ?? day
+                    }
+                    consumed.append(dayRange)
+                } else if !hasTime {
+                    date = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: date) ?? date
+                }
+                due = date
+                consumed.append(range)
+            } else if let (date, range) = dayOfMonth(in: text, now: now, calendar: calendar) {
+                due = date
+                consumed.append(range)
             }
-            due = date
-            consumed.append(range)
         }
         // "1時間後に休憩" is a reminder even without a verb; an absolute time still needs one.
         guard let due, relative || hasReminderWord || text.contains("になったら") else { return nil }
 
+        // Merge overlapping matches ("23日に9時" and "9時に") before editing, so every index still refers to `text`.
+        var merged: [Range<String.Index>] = []
+        for range in consumed.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = merged.last, last.overlaps(range) || last.upperBound == range.lowerBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
         var title = text
-        for range in consumed.sorted(by: { $0.lowerBound > $1.lowerBound }) { title.replaceSubrange(range, with: " ") }
-        let noise = ["になったら", "リマインドして", "リマインドしといて", "リマインド", "リマインダー", "思い出させて", "知らせて", "通知して", "アラームをかけて", "アラーム",
+        for range in merged.reversed() { title.replaceSubrange(range, with: " ") }
+        let noise = ["になったら", "リマインドして", "リマインドしといて", "リマインド", "リマインダーして", "リマインダーしといて", "リマインダー", "思い出させて", "知らせて", "通知して", "アラームをかけて", "アラーム",
                      "忘れないように", "覚えといて", "覚えておいて", "声かけて", "声をかけて", "呼んで", "教えて",
                      "入れといて", "入れておいて", "入れて", "追加して", "登録して", "設定して", "セットして", "かけて",
                      "するのを", "することを", "するように", "するの", "ように", "のを", "ことを", "っていう", "という", "って", "ください", "お願い", "ね", "よ"]
@@ -322,6 +355,35 @@ enum Intent {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if title.isEmpty { title = "リマインド" }
         return ReminderDraft(title: title, due: due)
+    }
+
+    /// "23日に" / "23日の9時半に" without a month, which the system detector ignores: the
+    /// next such day (this month, or next month once it has passed). Time defaults to 9:00.
+    private static func dayOfMonth(in text: String, now: Date, calendar: Calendar) -> (Date, Range<String.Index>)? {
+        guard let match = text.range(of: #"(?<![\d月/])(\d{1,2})日(?!後|間|目|分|以)(の|に|\s)*((午前|午後|朝|夜)?\s*(\d{1,2})\s*時(?!間)\s*((\d{1,2})\s*分|半)?)?"#, options: .regularExpression) else { return nil }
+        // Typed text may use full-width digits ("２３日"); Int only reads ASCII, and the range must stay on `text`.
+        let matched = String(text[match]).applyingTransform(.fullwidthToHalfwidth, reverse: false) ?? String(text[match])
+        let parsed = matched.components(separatedBy: CharacterSet.decimalDigits.inverted).filter { !$0.isEmpty }.map { Int($0) }
+        guard parsed.allSatisfy({ $0 != nil }), let day = parsed.first ?? nil, (1...31).contains(day) else { return nil }
+        let numbers = parsed.compactMap { $0 }
+        var hour = 9, minute = 0
+        if matched.contains("時"), numbers.count > 1 {
+            hour = numbers[1]
+            if (matched.contains("午後") || matched.contains("夜")), hour < 12 { hour += 12 }
+            minute = matched.contains("半") ? 30 : (numbers.count > 2 ? numbers[2] : 0)
+        }
+        guard (0...23).contains(hour), (0...59).contains(minute) else { return nil }
+        // Today still counts as "the 23rd"; a time already passed is reported by addReminder.
+        let today = calendar.startOfDay(for: now)
+        var month = calendar.date(from: calendar.dateComponents([.year, .month], from: now))
+        for _ in 0..<2 {
+            guard let first = month else { break }
+            var components = calendar.dateComponents([.year, .month], from: first)
+            components.day = day; components.hour = hour; components.minute = minute
+            if let date = calendar.date(from: components), calendar.component(.day, from: date) == day, date >= today { return (date, match) }
+            month = calendar.date(byAdding: .month, value: 1, to: first)
+        }
+        return nil
     }
 
     // MARK: Product registration

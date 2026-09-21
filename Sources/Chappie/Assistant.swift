@@ -69,6 +69,9 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if let draft = Intent.registrationRequest(text) { registerProduct(draft); return }
         if Intent.isReminderListRequest(text) { reply(reminderSummary()); return }
         if let draft = Intent.reminderDraft(from: text) { Task { await addReminder(draft) }; return }
+        if Intent.isReminderEdit(text) {
+            reply("リマインドの変更・削除はまだできません。Appleリマインダーアプリで直してください。「リマインドの一覧」で登録済みのものは確認できます。"); return
+        }
         if Intent.isReminderAddition(text) {
             reply("いつお知らせしますか？「明日9時に」「9月23日に」「30分後に」のように、時間を付けて言ってください。"); return
         }

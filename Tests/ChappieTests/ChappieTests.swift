@@ -243,6 +243,26 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         let medicine = Intent.reminderDraft(from: "明日の朝、薬を飲むのを思い出させて", now: now, calendar: calendar)
         XCTAssertEqual(medicine?.title, "薬を飲む")
 
+        let cardboard = Intent.reminderDraft(from: "9月23日に段ボール捨てるってリマインダー入れといて", now: now, calendar: calendar)
+        XCTAssertEqual(cardboard?.title, "段ボール捨てる")
+        XCTAssertEqual(cardboard.map { calendar.component(.month, from: $0.due) }, 9)
+        XCTAssertEqual(cardboard.map { calendar.component(.day, from: $0.due) }, 23)
+        XCTAssertEqual(cardboard.map { calendar.component(.hour, from: $0.due) }, 9)
+
+        let trash = Intent.reminderDraft(from: "明日の朝7時にゴミ出しをリマインダーに追加して", now: now, calendar: calendar)
+        XCTAssertEqual(trash?.title, "ゴミ出し")
+        XCTAssertEqual(trash.map { calendar.component(.hour, from: $0.due) }, 7)
+
+        let remember = Intent.reminderDraft(from: "水曜に新聞紙出すって覚えといて", now: now, calendar: calendar)
+        XCTAssertEqual(remember?.title, "新聞紙出す")
+        XCTAssertEqual(remember.map { calendar.component(.weekday, from: $0.due) }, 4)
+
+        XCTAssertNil(Intent.reminderDraft(from: "段ボール捨てるってリマインダー入れといて", now: now, calendar: calendar))
+        XCTAssertTrue(Intent.isReminderAddition("段ボール捨てるってリマインダー入れといて"))
+        XCTAssertTrue(Intent.isReminderAddition("電話するのをリマインドして"))
+        XCTAssertFalse(Intent.isReminderAddition("リマインドの一覧を見せて"))
+        XCTAssertFalse(Intent.isReminderAddition("今日の予定を教えて"))
+
         XCTAssertNil(Intent.reminderDraft(from: "今日の予定を教えて", now: now, calendar: calendar))
         XCTAssertNil(Intent.reminderDraft(from: "明日15時に会議を入れて", now: now, calendar: calendar))
         XCTAssertNil(Intent.reminderDraft(from: "シャンプー買って", now: now, calendar: calendar))

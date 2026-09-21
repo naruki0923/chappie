@@ -69,6 +69,9 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if let draft = Intent.registrationRequest(text) { registerProduct(draft); return }
         if Intent.isReminderListRequest(text) { reply(reminderSummary()); return }
         if let draft = Intent.reminderDraft(from: text) { Task { await addReminder(draft) }; return }
+        if Intent.isReminderAddition(text) {
+            reply("いつお知らせしますか？「明日9時に」「9月23日に」「30分後に」のように、時間を付けて言ってください。"); return
+        }
         if let mail = Intent.mailRequest(text) { research(text, mail: mail); return }
         if Intent.isBookingRequest(text) { booking(text); return }
         if let term = Intent.fileSearchTerm(text) { searchFiles(term); return }

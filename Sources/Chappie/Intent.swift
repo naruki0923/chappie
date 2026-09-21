@@ -261,11 +261,18 @@ enum Intent {
         var due: Date
     }
 
-    private static let reminderWords = ["リマインド", "思い出させて", "知らせて", "通知して", "アラーム", "忘れないように", "声かけて", "声をかけて", "呼んで"]
+    private static let reminderWords = ["リマインド", "リマインダー", "思い出させて", "知らせて", "通知して", "アラーム", "忘れないように", "覚えといて", "覚えておいて", "声かけて", "声をかけて", "呼んで"]
 
     static func isReminderListRequest(_ text: String) -> Bool {
         guard text.contains("リマインド") || text.contains("リマインダー") else { return false }
         return ["一覧", "何がある", "なにがある", "何が入って", "確認", "見せて", "教えて", "ある？", "ある?"].contains(where: text.contains)
+    }
+
+    /// "段ボール捨てるってリマインダー入れといて" with no time at all: still a reminder
+    /// request, so the Assistant asks when instead of sending it to the AI.
+    static func isReminderAddition(_ text: String) -> Bool {
+        guard text.contains("リマインド") || text.contains("リマインダー") else { return false }
+        return (additionWords + ["して", "しといて", "しておいて", "設定", "セット", "お願い"]).contains(where: text.contains)
     }
 
     /// "30分後に電話するのを教えて" / "金曜に振込をリマインドして". Relative times are
@@ -276,16 +283,15 @@ enum Intent {
         var consumed: [Range<String.Index>] = []
         var relative = false
 
-        if let match = text.range(of: #"(あと\s*)?(\d+)\s*(分|時間|日)(後|で|したら|経ったら|たったら)?"#, options: .regularExpression) {
+        // "あと10分" / "30分後" / "1時間したら". A bare "23日" is a date, not a count, so it falls through.
+        if let match = text.range(of: #"あと\s*\d+\s*(分|時間|日)|\d+\s*(分|時間|日)\s*(後|で|したら|経ったら|たったら)"#, options: .regularExpression),
+           let amount = Int(text[match].filter(\.isNumber)), amount > 0 {
             let matched = String(text[match])
-            guard matched.contains("後") || matched.contains("あと") || matched.contains("したら") || matched.contains("経ったら") || matched.contains("たったら") || matched.contains("で") else { return nil }
-            let amount = Int(matched.filter(\.isNumber)) ?? 0
-            guard amount > 0 else { return nil }
             let unit: Calendar.Component = matched.contains("分") ? .minute : matched.contains("時間") ? .hour : .day
             due = calendar.date(byAdding: unit, value: amount, to: now)
             consumed.append(match)
             relative = true
-        } else if hasReminderWord || text.contains("になったら") || text.contains("になったら教えて") {
+        } else if hasReminderWord || text.contains("になったら") {
             guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue) else { return nil }
             let nsText = text as NSString
             guard let match = detector.matches(in: text, range: NSRange(location: 0, length: nsText.length)).first(where: { $0.date != nil }),
@@ -302,14 +308,17 @@ enum Intent {
 
         var title = text
         for range in consumed.sorted(by: { $0.lowerBound > $1.lowerBound }) { title.replaceSubrange(range, with: " ") }
-        let noise = ["になったら", "リマインドして", "リマインドしといて", "リマインド", "思い出させて", "知らせて", "通知して", "アラームをかけて", "アラーム",
-                     "忘れないように", "声かけて", "声をかけて", "呼んで", "教えて", "するのを", "することを", "するように", "するの", "ように", "のを", "ことを", "って", "ください", "お願い", "ね", "よ"]
+        let noise = ["になったら", "リマインドして", "リマインドしといて", "リマインド", "リマインダー", "思い出させて", "知らせて", "通知して", "アラームをかけて", "アラーム",
+                     "忘れないように", "覚えといて", "覚えておいて", "声かけて", "声をかけて", "呼んで", "教えて",
+                     "入れといて", "入れておいて", "入れて", "追加して", "登録して", "設定して", "セットして", "かけて",
+                     "するのを", "することを", "するように", "するの", "ように", "のを", "ことを", "っていう", "という", "って", "ください", "お願い", "ね", "よ"]
         for word in noise.sorted(by: { $0.count > $1.count }) { title = title.replacingOccurrences(of: word, with: " ") }
         title = title.replacingOccurrences(of: #"[、。,.:：「」()（）]"#, with: " ", options: .regularExpression)
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        title = title.replacingOccurrences(of: #"^(を|は|で|に|と|の|も|が)\s*"#, with: "", options: .regularExpression)
-            .replacingOccurrences(of: #"\s*(を|は|で|に|と|の|も|が)$"#, with: "", options: .regularExpression)
+        // Particles can stack once the words between them are gone ("ゴミ出しを に"), so strip repeatedly.
+        title = title.replacingOccurrences(of: #"^((を|は|で|に|と|の|も|が)\s*)+"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(\s*(を|は|で|に|と|の|も|が))+$"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if title.isEmpty { title = "リマインド" }
         return ReminderDraft(title: title, due: due)

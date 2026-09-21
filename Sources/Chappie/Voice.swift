@@ -18,6 +18,16 @@ struct WakePhrase {
     }
 }
 
+/// Timestamp of the last microphone buffer, written from the audio thread and read by the watchdog.
+final class Heartbeat: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = Date()
+    var last: Date {
+        get { lock.withLock { stored } }
+        set { lock.withLock { stored = newValue } }
+    }
+}
+
 @MainActor
 final class Voice: ObservableObject {
     @Published var enabled = false
@@ -29,16 +39,27 @@ final class Voice: ObservableObject {
     var suppressed = false
     private let engine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "ja-JP"))
+    private let heartbeat = Heartbeat()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var renewal: Task<Void, Never>?
     private var silence: Task<Void, Never>?
     private var timeout: Task<Void, Never>?
+    private var retry: Task<Void, Never>?
+    private var watchdog: Task<Void, Never>?
+    private var configurationObserver: NSObjectProtocol?
     private var generation = 0
     private var installed = false
     private var requesting = false
     private var wakeSeen = false
     private var lastText = ""
+
+    init() {
+        // macOS stops the engine when the input device changes (AirPods, a display with a mic, sleep/wake).
+        configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.audioConfigurationChanged() }
+        }
+    }
 
     func toggle() { if enabled { stop() } else { Task { await start() } } }
     func start() async {
@@ -56,17 +77,70 @@ final class Voice: ObservableObject {
         enabled = true
         UserDefaults.standard.set(true, forKey: "voiceEnabled")
         restart()
+        armWatchdog()
     }
+    /// The user turned voice off: remembered across launches.
     func stop() {
-        enabled = false
         UserDefaults.standard.set(false, forKey: "voiceEnabled")
+        shutDown()
+    }
+    /// The app is quitting: release the microphone but keep the saved preference so the next launch listens again.
+    func suspend() { shutDown() }
+    /// The Mac woke from sleep: audio devices need a moment before the engine can start again.
+    func recover() {
+        guard enabled else { return }
+        tearDownAudio()
+        status = "マイクを再開しています…"
+        scheduleRestart(after: 1.5)
+    }
+    private func shutDown() {
+        enabled = false
+        timeout?.cancel(); watchdog?.cancel(); retry?.cancel(); retry = nil
+        tearDownAudio()
+        receiving = false; transcript = ""; status = "音声オフ"
+    }
+    private func tearDownAudio() {
         generation += 1
-        renewal?.cancel(); silence?.cancel(); timeout?.cancel()
+        renewal?.cancel(); silence?.cancel()
         task?.cancel(); task = nil
         engine.stop()
         if installed { engine.inputNode.removeTap(onBus: 0); installed = false }
         request?.endAudio(); request = nil
-        receiving = false; transcript = ""; status = "音声オフ"
+    }
+    /// A microphone problem is usually temporary (device switching, wake from sleep), so keep voice on and try again.
+    private func fail(_ message: String) {
+        tearDownAudio()
+        status = "\(message)。数秒後にもう一度試します"
+        scheduleRestart(after: 3)
+    }
+    private func scheduleRestart(after seconds: Double) {
+        retry?.cancel()
+        retry = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.enabled else { return }
+            self.retry = nil
+            self.restart()
+        }
+    }
+    private func audioConfigurationChanged() {
+        guard enabled else { return }
+        status = "マイクを切り替えています…"
+        scheduleRestart(after: 0.5)
+    }
+    /// Every few seconds, confirm audio is still flowing; the engine can stop, or a device can die, without any error reaching us.
+    private func armWatchdog() {
+        watchdog?.cancel()
+        watchdog = Task { [weak self] in
+            while true {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard !Task.isCancelled, let self, self.enabled else { return }
+                guard self.retry == nil else { continue }
+                if !self.engine.isRunning || Date().timeIntervalSince(self.heartbeat.last) > 5 {
+                    self.status = "マイクを再開しています…"
+                    self.restart()
+                }
+            }
+        }
     }
     func listenForCommand() {
         guard enabled else { Task { await start() }; return }
@@ -92,6 +166,7 @@ final class Voice: ObservableObject {
     }
     private func restart() {
         guard enabled else { return }
+        retry?.cancel(); retry = nil
         generation += 1
         let current = generation
         renewal?.cancel(); task?.cancel(); engine.stop()
@@ -103,19 +178,24 @@ final class Voice: ObservableObject {
         request = req
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { stop(); status = "マイクが見つかりません"; return }
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in req.append(buffer) }
+        guard format.sampleRate > 0, format.channelCount > 0 else { fail("マイクが見つかりません"); return }
+        let beat = heartbeat
+        beat.last = Date()
+        input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in req.append(buffer); beat.last = Date() }
         installed = true
-        do { engine.prepare(); try engine.start() } catch { stop(); status = "マイクを開始できません: \(error.localizedDescription)"; return }
+        do { engine.prepare(); try engine.start() } catch { fail("マイクを開始できません: \(error.localizedDescription)"); return }
         if !receiving { status = "「チャッピー」で呼んでね" }
+        let startedAt = Date()
         task = recognizer?.recognitionTask(with: req) { [weak self] result, error in
             Task { @MainActor in
                 guard let self, self.enabled, self.generation == current else { return }
                 if let result { self.consume(result.bestTranscription.formattedString) }
                 if error != nil || result?.isFinal == true {
+                    // An error right after starting means recognition itself is unavailable; back off instead of spinning.
+                    let delay: UInt64 = error != nil && Date().timeIntervalSince(startedAt) < 1 ? 2_000_000_000 : 100_000_000
                     self.renewal?.cancel()
                     self.renewal = Task {
-                        try? await Task.sleep(nanoseconds: 100_000_000)
+                        try? await Task.sleep(nanoseconds: delay)
                         guard !Task.isCancelled, self.generation == current else { return }
                         // A new recognition task has no wake phrase prefix.
                         self.wakeSeen = false

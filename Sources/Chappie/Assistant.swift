@@ -41,7 +41,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(woke), name: NSWorkspace.didWakeNotification, object: nil)
     }
     @objc private func woke() {
-        if voice.enabled { voice.stop(); Task { await voice.start() } }
+        voice.recover()
     }
     func submit(_ provided: String? = nil) {
         let raw = (provided ?? input).trimmingCharacters(in: .whitespacesAndNewlines)

@@ -119,7 +119,7 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate {
         if ended { dragStartOrigin = nil }
     }
     @objc private func show() { panel.orderFrontRegardless(); assistant.expanded = true }
-    @objc private func quit() { assistant.cancel(); assistant.voice.stop(); NSApp.terminate(nil) }
+    @objc private func quit() { assistant.cancel(); assistant.voice.suspend(); NSApp.terminate(nil) }
 }
 
 struct CompanionView: View {

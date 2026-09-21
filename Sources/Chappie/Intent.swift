@@ -411,6 +411,85 @@ enum Intent {
         return softDraftWords.contains(where: lowered.contains) ? .draft : .summary
     }
 
+    // MARK: Garbage
+
+    enum GarbageQuestion: Equatable {
+        /// "今日は何のゴミ？" / "来週のゴミ" — what is collected in [start, end). `kind` is set when
+        /// a kind was also named ("明日は可燃？"), so the answer can add that kind's next day.
+        case days(start: Date, end: Date, label: String, kind: GarbageKind?)
+        /// "ペットボトルはいつ？" / "蛍光灯は何ゴミ？" — the next collection of one kind; `item` is the
+        /// thing that was named when it was not the kind itself, so the answer can say what it is.
+        case next(GarbageKind, item: String?)
+        /// "粗大ごみはいつ？" — not a collection day; it is by appointment.
+        case bulky
+        /// "不燃ごみは？" — this district has no such category; the answer explains the split.
+        case nonBurnable
+        /// "充電式電池はいつ？" — never a collection day; it goes to a recycle box.
+        case rechargeableBattery
+    }
+
+    private static let garbageWords = ["ごみ", "ゴミ", "収集日", "回収日"]
+    private static let garbageDayWords = ["いつ", "何曜", "なんよう", "の日", "出せる", "出せます", "出す", "出して", "出し", "回収", "収集", "捨て"]
+    private static let strongGarbageKindWords = ["可燃", "燃えるごみ", "燃えるゴミ", "燃えないごみ", "燃えないゴミ", "不燃", "粗大", "ペットボトル", "プラスチック", "プラの日", "プラごみ", "プラゴミ", "紙類", "古紙", "段ボール", "ダンボール",
+                                                 "金物", "埋立", "埋め立て", "水銀", "蛍光灯", "電球", "電池", "モバイルバッテリー", "空き缶", "スプレー缶", "カセットボンベ", "発泡スチロール"]
+    private static let bulkyWords = ["粗大"]
+    private static let nonBurnableWords = ["不燃", "燃えない", "燃やせない", "燃せない"]
+    private static let rechargeableWords = ["充電式", "充電池", "モバイルバッテリー", "リチウムイオン"]
+    private static let weekdayNames: [(String, Int)] = [("日曜", 1), ("月曜", 2), ("火曜", 3), ("水曜", 4), ("木曜", 5), ("金曜", 6), ("土曜", 7)]
+
+    /// A garbage word, or a kind name with a "when" word, marks the question. Shopping
+    /// ("ゴミ袋買って", "ゴミ袋欲しい"), deliveries ("缶ビールいつ届く") and calendar edits
+    /// ("明日8時にゴミ出しを入れて", "ゴミ出しの予定を消して") keep their own routes.
+    static func garbageQuestion(_ text: String, now: Date = Date(), calendar: Calendar = .current) -> GarbageQuestion? {
+        switch purchaseIntent(text) {
+        case .explicit: return nil
+        case .soft: if ["袋", "箱", "ネット", "バケツ"].contains(where: text.contains) { return nil }
+        case .none: break
+        }
+        // "電池いつ届く？" is about a parcel even without an order word.
+        guard !isOrderStatusQuestion(text), !["届く", "届いた", "届き", "配達", "配送", "到着", "発送", "出荷"].contains(where: text.contains) else { return nil }
+        guard !(additionWords + moveWords + deleteWords).contains(where: text.contains) else { return nil }
+        let hasGarbageWord = garbageWords.contains(where: text.contains)
+        let hasKindWord = strongGarbageKindWords.contains(where: text.contains) && garbageDayWords.contains(where: text.contains)
+        guard hasGarbageWord || hasKindWord else { return nil }
+        if bulkyWords.contains(where: text.contains) { return .bulky }
+        if nonBurnableWords.contains(where: text.contains) { return .nonBurnable }
+        if rechargeableWords.contains(where: text.contains) { return .rechargeableBattery }
+        let named = GarbageKind.named(in: text)
+        let kind = named?.kind
+
+        let today = calendar.startOfDay(for: now)
+        func day(_ offset: Int) -> Date { calendar.date(byAdding: .day, value: offset, to: today)! }
+        var range: (start: Date, end: Date, label: String)?
+        if text.contains("明後日") || text.contains("あさって") || text.contains("明日") || text.contains("あした") || text.contains("今日") || text.contains("きょう") || text.contains("本日") {
+            range = lookupRange(text, now: now, calendar: calendar)
+        } else if let weekday = weekdayNames.first(where: { text.contains($0.0) }) {
+            // "来週の火曜" is next week's; otherwise the coming one, today included.
+            var candidate = today
+            if text.contains("来週") { candidate = lookupRange("来週", now: now, calendar: calendar).start }
+            while calendar.component(.weekday, from: candidate) != weekday.1 { candidate = calendar.date(byAdding: .day, value: 1, to: candidate)! }
+            range = (candidate, calendar.date(byAdding: .day, value: 1, to: candidate)!, "\(weekday.0)日")
+        } else if text.contains("今週") || text.contains("来週") || text.contains("週末") || text.contains("今月") || text.contains("来月") {
+            range = lookupRange(text, now: now, calendar: calendar)
+        } else if ["年末年始", "年末", "年始", "正月", "お正月"].contains(where: text.contains) {
+            // The fiscal-year calendar runs April–March, so "年末年始" is the coming (or just passed) one.
+            let month = calendar.component(.month, from: today)
+            let year = calendar.component(.year, from: today) - (month < 4 ? 1 : 0)
+            let start = calendar.date(from: DateComponents(year: year, month: 12, day: 28))!
+            range = (start, calendar.date(byAdding: .day, value: 12, to: start)!, "年末年始")
+        } else if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue),
+                  let match = detector.matches(in: text, range: NSRange(location: 0, length: (text as NSString).length)).first(where: { $0.date != nil }),
+                  let date = match.date {
+            // An explicit date needs no label; the answer prints the date itself.
+            let start = calendar.startOfDay(for: date)
+            range = (start, calendar.date(byAdding: .day, value: 1, to: start)!, "")
+        }
+
+        if let range { return .days(start: range.start, end: range.end, label: range.label, kind: kind) }
+        if let named { return .next(named.kind, item: named.item) }
+        return .days(start: today, end: day(7), label: "今日から1週間", kind: nil)
+    }
+
     // MARK: Files
 
     /// Returns the name to look for, or nil when the sentence is not a file search.

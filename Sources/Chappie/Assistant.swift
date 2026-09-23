@@ -901,7 +901,12 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         }
         do {
             try job.run()
-            stdin.fileHandleForWriting.write(Data(prompt.utf8)); try? stdin.fileHandleForWriting.close()
+            // Off the main thread: a prompt over the 64KB pipe buffer blocks until the child reads it.
+            // If the child exits without reading, the write throws EPIPE (SIGPIPE is ignored in App.swift).
+            let writer = stdin.fileHandleForWriting, data = Data(prompt.utf8)
+            DispatchQueue.global(qos: .userInitiated).async {
+                try? writer.write(contentsOf: data); try? writer.close()
+            }
             runTimeout = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: timeout * 1_000_000_000)
                 guard !Task.isCancelled, let self, self.runID == id else { return }

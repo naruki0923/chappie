@@ -865,6 +865,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     /// directory unless `cwd` is given) that is removed afterwards. `arguments` gets that folder and
     /// the output file; the child's stdout goes to the output file unless `captureStdout` is false,
     /// in which case the child writes the file itself. `completion` gets the exit status and the output.
+    /// If the temp folder can't be made or the child can't be launched, `onStartFailure` runs instead.
     /// After `timeout` seconds the run is cancelled and `onTimeout` runs. Once cancel() or a newer run
     /// has changed runID, neither callback runs.
     private func runChild(binary: String, arguments: (_ folder: URL, _ output: URL) -> [String], cwd: URL? = nil,
@@ -875,7 +876,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("chappie-\(id.uuidString)")
         let output = folder.appendingPathComponent("output.txt")
         do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        catch { reply(error.localizedDescription); return }
+        catch { onStartFailure(error); return }
         let job = Process(); process = job
         job.currentDirectoryURL = cwd ?? folder
         job.executableURL = URL(fileURLWithPath: binary)

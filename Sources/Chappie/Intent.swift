@@ -584,6 +584,58 @@ enum Intent {
             .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
     }
 
+    // MARK: Memory
+
+    enum SaveRequest: Equatable {
+        /// "今のを保存して" / "保存して": the conversation just before this request.
+        case lastExchange
+        /// "コーヒーはブラック派ってメモして": the user's own words.
+        case memo(String)
+    }
+
+    private static let saveVerbs = [
+        "保存しておいて", "保存しといて", "保存して", "記録しておいて", "記録しといて", "記録して",
+        "メモしておいて", "メモしといて", "メモっといて", "メモって", "メモして", "ノートに残して", "ノートに書いて",
+        "記憶しておいて", "記憶しといて", "記憶して", "残しておいて", "残しといて", "覚えておいて", "覚えといて"
+    ]
+
+    /// Saving happens only when asked. "覚えといて" saves the last exchange but never a quoted
+    /// memo, because "歯医者って覚えといて" is a reminder that still needs a time.
+    static func saveRequest(_ text: String) -> SaveRequest? {
+        var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"[。．.！!？?\s]+$"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(ください|くれる|くれ|お願いします|お願い|ね|よ)$"#, with: "", options: .regularExpression)
+        guard let verb = saveVerbs.first(where: { body.hasSuffix($0) }) else { return nil }
+        body = String(body.dropLast(verb.count)).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "、,")))
+        if body.range(of: #"^((今|いま|さっき|今日|きょう)の?|この|その|それ|これ)?(話|会話|内容|答え|回答|やりとり|やり取り|案|提案|件)?(を|も|は)?$"#, options: .regularExpression) != nil {
+            return .lastExchange
+        }
+        guard !verb.hasPrefix("覚え") else { return nil }
+        var content: String?
+        if let quote = body.range(of: #"\s*(って|と)$"#, options: .regularExpression) {
+            content = String(body[..<quote.lowerBound])
+        } else if verb.hasPrefix("メモ") || verb.hasPrefix("記録"), body.hasSuffix("を"),
+                  !["この", "その", "あの"].contains(where: body.hasPrefix) {
+            content = String(body.dropLast())
+        }
+        guard let memo = content?.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "、,「」『』"))), !memo.isEmpty else { return nil }
+        return .memo(memo)
+    }
+
+    /// Words that point back at something the user said. Bare "前に" / "私の" / "メモ" are left out:
+    /// "出発の前に" or "私のPCが遅い" are web questions and should keep page fetching.
+    private static let memoryWords = [
+        "前に話", "前に決め", "前に言", "前に相談", "前に考え", "前にメモ", "前に保存", "この前", "このまえ", "こないだ", "前回",
+        "たっけ", "だっけ", "決めた", "決めてた", "話した", "話してた", "言ってた", "相談した", "考えてた", "覚えてる", "覚えている",
+        "記憶に", "記憶から", "メモした", "メモしてた", "メモってた", "保存した", "記録した", "好み"
+    ]
+
+    /// "京都の宿、前にどうするって決めたっけ？" points at the user's saved notes. Only these questions
+    /// read the memory folder, and they get no page fetching, so a web page cannot carry the notes away.
+    static func isMemoryQuestion(_ text: String) -> Bool {
+        memoryWords.contains(where: text.contains)
+    }
+
     // MARK: Sales / settings
 
     static func isSalesQuestion(_ text: String) -> Bool {

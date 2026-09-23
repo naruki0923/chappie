@@ -156,6 +156,11 @@ struct CompanionView: View {
                             Text("呼びかけの認識はこのMac内で処理します。一般の質問と旅行などの提案は、ログイン済みのClaude Code CLI（無い場合はCodex CLI）に送信します。ファイル名検索と予定の確認・追加は端末内で処理します。")
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
                             Button("商品・noteを登録") { connections = true }
+                            Button("記憶フォルダを開く") {
+                                let vault = MemoryVault.standard
+                                do { try vault.prepare(); NSWorkspace.shared.open(vault.root) }
+                                catch { model.answer = "記憶フォルダを作れませんでした: \(error.localizedDescription)" }
+                            }
                             Text("Amazon購入：専用ブラウザで都度価格確認 / 売上サービス：未接続").font(.system(size: 11)).foregroundStyle(.secondary)
                         }.padding(10).background(Color.white.opacity(0.8), in: RoundedRectangle(cornerRadius: 12))
                     }

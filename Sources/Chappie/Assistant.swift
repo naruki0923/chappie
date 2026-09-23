@@ -668,7 +668,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         """
         // Inside the folder the child can read the index and notes; writing and anything outside are denied.
         runChild(binary: binary,
-                 arguments: { folder, _ in Self.claudeArguments + Self.noMCPArguments(in: folder) + ["--allowedTools", ""] },
+                 arguments: { folder, _ in Self.claudeArguments + Self.noMCPArguments(writingConfigInto: folder) + ["--allowedTools", ""] },
                  cwd: vault.root, prompt: prompt, timeout: 120,
                  onTimeout: { self.writeMemory(.verbatim(exchange), to: vault, lead: "要約が時間切れになったので、やり取りをそのまま") },
                  onStartFailure: { _ in self.writeMemory(.verbatim(exchange), to: vault, lead: "要約を始められなかったので、やり取りをそのまま") }) { status, result in
@@ -718,7 +718,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         \(text)
         """
         runChild(binary: binary,
-                 arguments: { folder, _ in Self.claudeArguments + Self.noMCPArguments(in: folder) + ["--allowedTools", ""] },
+                 arguments: { folder, _ in Self.claudeArguments + Self.noMCPArguments(writingConfigInto: folder) + ["--allowedTools", ""] },
                  prompt: prompt, timeout: 120,
                  onTimeout: { self.answer = "予約条件の整理がタイムアウトしました。もう一度お願いします。" },
                  onStartFailure: { self.reply("予約の段取りを開始できませんでした: \($0.localizedDescription)") }) { status, result in
@@ -760,7 +760,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let codexIndex = memoryReady ? vault.indexExcerpt() : ""
         let binary: String
         let arguments: (_ folder: URL, _ output: URL) -> [String]
-        var cwd: URL?
+        let cwd: URL?
         let captureStdout: Bool
         switch backend {
         case .claude(let claude):
@@ -771,7 +771,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             arguments = { folder, _ in
                 switch mail {
                 case nil:
-                    return Self.claudeArguments + Self.noMCPArguments(in: folder) + MemoryVault.claudeWebTools(readingNotes: memoryReady)
+                    return Self.claudeArguments + Self.noMCPArguments(writingConfigInto: folder) + MemoryVault.claudeWebTools(readingNotes: memoryReady)
                 case .summary?:
                     return Self.claudeArguments + ["--allowedTools", Self.gmailReadTools.joined(separator: ","),
                                                    "--disallowedTools", (Self.gmailForbiddenTools + Self.gmailDraftTools).joined(separator: ",")]
@@ -781,13 +781,14 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
                 }
             }
             // Reading is allowed only inside the working directory; writes and outside paths are denied in dontAsk mode.
-            if mail == nil, memoryReady { cwd = vault.root }
+            cwd = mail == nil && memoryReady ? vault.root : nil
             captureStdout = true
         case .codex(let codex):
             binary = codex
             arguments = { _, output in
                 ["exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "-c", "approval_policy=\"never\"", "-c", MemoryVault.codexWebSearch(readingNotes: !codexIndex.isEmpty), "-c", "features.shell_tool=false", "-c", "features.apps=false", "--output-last-message", output.path, "-"]
             }
+            cwd = nil
             captureStdout = false
         }
         let recentConversation = conversation.suffix(10).map { "\($0.role): \($0.text)" }.joined(separator: "\n")
@@ -854,7 +855,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     private static let claudeArguments = ["-p", "--no-session-persistence", "--permission-mode", "dontAsk"]
 
     /// Shuts out every MCP server, the user's claude.ai connectors included, by pointing at an empty config written into the run's folder.
-    private static func noMCPArguments(in folder: URL) -> [String] {
+    private static func noMCPArguments(writingConfigInto folder: URL) -> [String] {
         let mcpConfig = folder.appendingPathComponent("mcp.json")
         try? Data("{\"mcpServers\":{}}".utf8).write(to: mcpConfig)
         return ["--strict-mcp-config", "--mcp-config", mcpConfig.path]

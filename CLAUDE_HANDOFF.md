@@ -73,7 +73,7 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
 ## 主なファイル
 
 - `Sources/Chappie/Intent.swift`: 命令の振り分け判定（購入語、承認/中止、予定の読み取り/追加、日時解釈、ファイル検索語）。Foundationのみで単体テスト対象
-- `Sources/Chappie/Assistant.swift`: 振り分けの実行、会話、購入確認、予定の読み取り・追加、ファイル検索、調査
+- `Sources/Chappie/Assistant.swift`: 振り分けの実行、会話、購入確認、予定の読み取り・追加、ファイル検索、調査。子CLI（Claude Code／Codex）の起動は予約・調査・記憶の保存とも `runChild` を通す（一時フォルダ、標準入力でのプロンプト、`runID` での古い結果の無視、タイムアウト、後片付け）。新しく子CLIを使うときもここを使う
 - `Sources/Chappie/AmazonSession.swift`: Amazon専用画面、価格取得、レジ、注文確定、完了確認
 - `Sources/Chappie/Memory.swift`: 記憶フォルダ（ノートの書き出し、索引、双方向リンク、子Claude向けルール）。Foundationのみで単体テスト対象
 - `Sources/Chappie/GarbageCalendar.swift`: ごみの種類・出し方・清水地区2026年度の収集日データと回答文。Foundationのみで単体テスト対象

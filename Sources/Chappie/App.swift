@@ -19,8 +19,6 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate {
     private var item: NSStatusItem!
     private var dragStartOrigin: CGPoint?
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // A child CLI that exits before reading its prompt would otherwise kill the app on the stdin write.
-        signal(SIGPIPE, SIG_IGN)
         NSApp.setActivationPolicy(.accessory)
         if let index = CommandLine.arguments.firstIndex(of: "--import-purchases"), CommandLine.arguments.count > index + 1 {
             let result = assistant.connections.importPurchaseCSV(at: CommandLine.arguments[index + 1])

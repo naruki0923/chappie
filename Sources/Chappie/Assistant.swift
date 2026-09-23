@@ -32,8 +32,8 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     private var pendingPurchase: PendingPurchase?
     private var reminderClock: Timer?
     private var conversation: [(role: String, text: String)] = []
-    /// The last reply was a memory save, so "保存して" again has nothing new to keep. Any other reply clears it.
-    private var justSaved = false
+    /// The exchange saved last, so "保存して" again (even after a memo or a reminder) does not save it twice.
+    private var savedExchange: [MemoryNote.Line]?
 
     override init() {
         super.init()
@@ -55,7 +55,6 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         speech.stopSpeaking(at: .immediate)
         // Typed requests often start with the name ("チャッピー、〜して"); voice input already has it removed.
         let text = WakePhrase.command(in: raw) ?? raw
-        let lastWasSave = justSaved
         if text.isEmpty { reply("はい、チャッピーです。何をしましょう？"); return }
         if let pending = pendingPurchase {
             if Intent.isAffirmative(text) {
@@ -69,7 +68,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             }
             return
         }
-        if let save = Intent.saveRequest(text) { saveMemory(save, lastWasSave: lastWasSave); return }
+        if let save = Intent.saveRequest(text) { saveMemory(save); return }
         if let draft = Intent.registrationRequest(text) { registerProduct(draft); return }
         if Intent.isReminderListRequest(text) { reply(reminderSummary()); return }
         if let draft = Intent.reminderDraft(from: text) { Task { await addReminder(draft) }; return }
@@ -136,9 +135,9 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         let names = connections.products.map(\.name).joined(separator: "、")
         return "買えるのは登録済みの\(connections.products.count)点です：\(names)。「シャンプー買って」のように商品名で言ってください。金額を確認してから、「いいよ」で注文します。"
     }
-    func reply(_ text: String) {
-        answer = text; busy = false; justSaved = false
-        remember(role: "チャッピー", text: text)
+    func reply(_ text: String, as role: String = "チャッピー") {
+        answer = text; busy = false
+        remember(role: role, text: text)
         guard readAloud else {
             voice.suppressed = false
             if voice.enabled {
@@ -227,7 +226,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         ・Amazon購入：専用ブラウザを使用。金額確認後、「いいよ」で実行
         ・登録商品：\(connections.products.count)件\(productNames.isEmpty ? "" : "（\(productNames)）")
         ・予想用note：\(note)
-        ・記憶：\(memory.displayPath)（ノート\(memory.noteNames.count)件）。「今のを保存して」「〜ってメモして」で保存し、一般の質問ではこれを読んでから答える
+        ・記憶：\(memory.displayPath)（ノート\(memory.noteNames.count)件）。「今のを保存して」「〜ってメモして」で保存し、「前に決めた〜」「〜だっけ」のような質問ではこれを読んで答える
         ・TikTok Shop購入：未接続
         ・売上サービス：未接続
         ファイル検索、旅行・出張・会食のプラン提案と予約の段取り（支払い前まで）、Gmailの未読要約と下書き、リマインド、一般質問、Web調査、価格調査にも対応しています。
@@ -377,7 +376,8 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         scheduledReminders = pending
         expanded = true
         NSSound.beep()
-        reply("リマインドです。「\(due.title)」の時間です。")
+        // A reminder is not an answer to anything; it is kept apart from replies so "保存して" skips it.
+        reply("リマインドです。「\(due.title)」の時間です。", as: MemoryNote.reminderRole)
     }
 
     private func addReminder(_ draft: Intent.ReminderDraft) async {
@@ -631,18 +631,17 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
 
     /// Saves to the memory folder, only because the user asked. The child Claude runs inside the
     /// folder with no tools but reading, writes the summary and picks related notes; Chappie writes the files.
-    private func saveMemory(_ request: Intent.SaveRequest, lastWasSave: Bool) {
+    private func saveMemory(_ request: Intent.SaveRequest) {
         let history = conversation.dropLast()  // the save request itself
         let exchange: [MemoryNote.Line]
         let material: String
         switch request {
         case .lastExchange:
-            guard let replyIndex = history.lastIndex(where: { $0.role == "チャッピー" }) else {
+            guard let last = MemoryNote.lastExchange(in: history.map { MemoryNote.Line(role: $0.role, text: $0.text) }) else {
                 reply("保存する会話がまだありません。質問や相談のあとで「今のを保存して」と言ってください。"); return
             }
-            if lastWasSave { reply("今のやり取りはもう保存してあります。"); return }
-            let questionIndex = history[..<replyIndex].lastIndex { $0.role == "ユーザー" } ?? replyIndex
-            exchange = history[questionIndex...replyIndex].map { MemoryNote.Line(role: $0.role, text: $0.text) }
+            if last == savedExchange { reply("今のやり取りはもう保存してあります。"); return }
+            exchange = last
             material = "直近の会話（保存するのは最後の話題。それより前の関係ない話は入れない）:\n"
                 + history.suffix(10).map { "\($0.role): \($0.text)" }.joined(separator: "\n")
         case .memo(let memo):
@@ -719,7 +718,8 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             let saved = try vault.save(note)
             let links = saved.linked.isEmpty ? "" : "関係するノート\(saved.linked.count)件とつなげました。"
             reply("\(lead)「\(MemoryVault.oneLine(note.title))」として記憶に保存しました。\(links)次からの相談で参考にします。")
-            justSaved = true
+            // A memo is the user's words, not an exchange; "今のを保存して" after it still means the exchange before it.
+            if note.exchange.contains(where: { $0.role == "チャッピー" }) { savedExchange = note.exchange }
         } catch {
             reply("記憶に保存できませんでした: \(error.localizedDescription)")
         }
@@ -821,10 +821,12 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         catch { reply(error.localizedDescription); return }
         let job = Process(); process = job
         job.currentDirectoryURL = folder
-        // General questions are answered from inside the memory folder, so the child reads the
-        // user's saved notes (and the folder's CLAUDE.md) first. Mail requests stay outside it.
+        // Questions about what the user said or decided are answered from inside the memory folder,
+        // so the child reads the saved notes (and the folder's CLAUDE.md) first. Mail requests stay outside it.
         let vault = MemoryVault.standard
-        let memoryReady = mail == nil && (try? vault.prepare()) != nil
+        let memoryReady = mail == nil && Intent.isMemoryQuestion(text) && (try? vault.prepare()) != nil
+        // Codex cannot open the folder, so it only sees the index; with no notes there is nothing to protect.
+        let codexIndex = memoryReady ? vault.indexExcerpt() : ""
         let claudeOutput: FileHandle?
         switch backend {
         case .claude(let binary):
@@ -837,9 +839,10 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             case nil:
                 let mcpConfig = folder.appendingPathComponent("mcp.json")
                 try? Data("{\"mcpServers\":{}}".utf8).write(to: mcpConfig)
-                arguments += ["--strict-mcp-config", "--mcp-config", mcpConfig.path, "--allowedTools", "WebSearch,WebFetch"]
+                arguments += ["--strict-mcp-config", "--mcp-config", mcpConfig.path]
                 // Reading is allowed only inside the working directory; writes and outside paths are denied in dontAsk mode.
                 if memoryReady { job.currentDirectoryURL = vault.root }
+                arguments += MemoryVault.claudeWebTools(readingNotes: memoryReady)
             case .summary?:
                 arguments += ["--allowedTools", Self.gmailReadTools.joined(separator: ","),
                               "--disallowedTools", (Self.gmailForbiddenTools + Self.gmailDraftTools).joined(separator: ",")]
@@ -853,7 +856,7 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             job.standardOutput = claudeOutput ?? FileHandle.nullDevice
         case .codex(let binary):
             job.executableURL = URL(fileURLWithPath: binary)
-            job.arguments = ["exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "-c", "approval_policy=\"never\"", "-c", "web_search=\"live\"", "-c", "features.shell_tool=false", "-c", "features.apps=false", "--output-last-message", output.path, "-"]
+            job.arguments = ["exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "-c", "approval_policy=\"never\"", "-c", MemoryVault.codexWebSearch(readingNotes: !codexIndex.isEmpty), "-c", "features.shell_tool=false", "-c", "features.apps=false", "--output-last-message", output.path, "-"]
             claudeOutput = nil
             job.standardOutput = FileHandle.nullDevice
         }
@@ -883,10 +886,9 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if !memoryReady {
             memoryInstructions = ""
         } else if case .claude = backend {
-            memoryInstructions = "作業フォルダはユーザーの記憶（保存を頼まれた過去の会話やメモ）です。質問がユーザー自身の考え・好み・過去の相談・決めたこと・進めていることに関わりそうなら、まず 索引.md を読み、関係するノートだけを開いて踏まえて答えます。使ったら「前に〜と話していましたね」と一言添えます。記憶のファイルは書き換えません。"
+            memoryInstructions = "作業フォルダはユーザーの記憶（保存を頼まれた過去の会話やメモ）です。質問がユーザー自身の考え・好み・過去の相談・決めたこと・進めていることに関わりそうなら、まず 索引.md を読み、関係するノートだけを開いて踏まえて答えます。使ったら「前に〜と話していましたね」と一言添えます。記憶のファイルは書き換えません。今回はWebページを開けません（Web検索の結果だけ使えます）。"
         } else {
-            let excerpt = vault.indexExcerpt()
-            memoryInstructions = excerpt.isEmpty ? "" : "ユーザーの記憶の索引（保存を頼まれた過去の会話やメモの要約。新しい順）です。関係があれば踏まえて答え、使ったら「前に〜と話していましたね」と一言添えます:\n\(excerpt)"
+            memoryInstructions = codexIndex.isEmpty ? "" : "ユーザーの記憶の索引（保存を頼まれた過去の会話やメモの要約。新しい順）です。関係があれば踏まえて答え、使ったら「前に〜と話していましたね」と一言添えます。今回はWeb検索を使えません:\n\(codexIndex)"
         }
         let prompt = """
         あなたは日本語のデスクトップアシスタント「チャッピー」です。経営者を支える大企業の秘書のように、先回りして、要点から、日本語で簡潔に答えてください。

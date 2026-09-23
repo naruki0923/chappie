@@ -606,6 +606,33 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         XCTAssertNil(Intent.saveRequest("保存しないで"))
         XCTAssertNil(Intent.saveRequest("保存の仕方を教えて"))
         XCTAssertNil(Intent.saveRequest("今日の予定"))
+
+        XCTAssertTrue(Intent.isMemoryQuestion("京都旅行の宿、前にどうするって決めてたっけ？"))
+        XCTAssertTrue(Intent.isMemoryQuestion("この前話した企画、覚えてる？"))
+        XCTAssertTrue(Intent.isMemoryQuestion("私の好みに合う店を探して"))
+        XCTAssertFalse(Intent.isMemoryQuestion("東京の明日の天気は？"))
+        XCTAssertFalse(Intent.isMemoryQuestion("このページを要約して https://example.com"))
+        XCTAssertFalse(Intent.isMemoryQuestion("出発の前に準備するものは？"))
+        XCTAssertFalse(Intent.isMemoryQuestion("私のPCが遅い原因を調べて"))
+        XCTAssertFalse(Intent.isMemoryQuestion("メモアプリのおすすめ"))
+        XCTAssertFalse(Intent.isMemoryQuestion("あっけない結末の映画を調べて"))
+        XCTAssertTrue(Intent.isMemoryQuestion("あの店の名前、何だっけ"))
+        XCTAssertEqual(MemoryVault.claudeWebTools(readingNotes: true), ["--allowedTools", "WebSearch", "--disallowedTools", "WebFetch"])
+        XCTAssertEqual(MemoryVault.claudeWebTools(readingNotes: false), ["--allowedTools", "WebSearch,WebFetch"])
+        XCTAssertEqual(MemoryVault.codexWebSearch(readingNotes: true), "web_search=\"disabled\"")
+        XCTAssertEqual(MemoryVault.codexWebSearch(readingNotes: false), "web_search=\"live\"")
+
+        // Replies to save requests are skipped; the question they answered is what gets saved.
+        func line(_ role: String, _ text: String) -> MemoryNote.Line { MemoryNote.Line(role: role, text: text) }
+        XCTAssertNil(MemoryNote.lastExchange(in: []))
+        XCTAssertNil(MemoryNote.lastExchange(in: [line("ユーザー", "保存して"), line("チャッピー", "保存する会話がまだありません。")]))
+        let qa = [line("ユーザー", "京都の宿は？"), line("チャッピー", "町家がおすすめです。")]
+        XCTAssertEqual(MemoryNote.lastExchange(in: qa), qa)
+        XCTAssertEqual(MemoryNote.lastExchange(in: qa + [line("ユーザー", "チャッピー、保存して"), line("チャッピー", "記憶に保存できませんでした")]), qa)
+        XCTAssertEqual(MemoryNote.lastExchange(in: qa + [line(MemoryNote.reminderRole, "リマインドです。")]), qa)
+        XCTAssertEqual(MemoryNote.lastExchange(in: qa + [line("ユーザー", "予算は2万ってメモして"), line("チャッピー", "記憶に保存しました。")]), qa)
+        XCTAssertEqual(MemoryNote.lastExchange(in: qa + [line("ユーザー", "天気は？"), line("チャッピー", "晴れです。")]),
+                       [line("ユーザー", "天気は？"), line("チャッピー", "晴れです。")])
     }
 
     func testMemoryVault() {
@@ -654,6 +681,33 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         try! vault.prepare()
         XCTAssertEqual(try! String(contentsOf: vault.rules, encoding: .utf8), "自分のルール")
 
+        // APFS ignores case, so "ABC" must not overwrite "abc" from the same day.
+        _ = try! vault.save(MemoryNote(title: "iPhone", summary: "s", tags: [], body: "1", related: [], exchange: []), now: now)
+        XCTAssertEqual(try! vault.save(MemoryNote(title: "IPHONE", summary: "s", tags: [], body: "2", related: [], exchange: []), now: now).name, "2026-09-23 IPHONE (2)")
+
+        // A 関連 heading inside the body does not catch the backlink; the last one (Chappie's) does.
+        let withHeading = try! vault.save(MemoryNote(title: "見出し入り", summary: "s", tags: [], body: "## 関連\n本文の見出し", related: [], exchange: []), now: now)
+        _ = try! vault.save(MemoryNote(title: "後から", summary: "s", tags: [], body: "b", related: [withHeading.name], exchange: []), now: now)
+        let headed = try! String(contentsOf: vault.logs.appendingPathComponent(withHeading.name + ".md"), encoding: .utf8)
+        XCTAssertTrue(headed.contains("## 関連\n本文の見出し\n"))
+        XCTAssertTrue(headed.hasSuffix("## 関連\n- [[2026-09-23 後から]]\n"))
+
+        // A related note that cannot be read loses only its backlink; the save itself succeeds.
+        let broken = vault.logs.appendingPathComponent("壊れた.md")
+        try! Data([0xFF, 0xFE, 0xFD]).write(to: broken)
+        XCTAssertEqual(try! vault.save(MemoryNote(title: "壊れた先", summary: "s", tags: [], body: "b", related: ["壊れた"], exchange: []), now: now).linked, [])
+
+        // An index the user reduced to bare entries still gets the newest on top; an unreadable one is never overwritten.
+        try! "- [[old]] — 古い\n".write(to: vault.index, atomically: true, encoding: .utf8)
+        _ = try! vault.save(MemoryNote(title: "最新", summary: "新しい", tags: [], body: "b", related: [], exchange: []), now: now)
+        XCTAssertEqual(try! String(contentsOf: vault.index, encoding: .utf8), "- [[2026-09-23 最新]] — 新しい\n- [[old]] — 古い\n")
+        try! Data([0xFF, 0xFE, 0xFD]).write(to: vault.index)
+        XCTAssertNil(try? vault.save(MemoryNote(title: "読めない索引", summary: "s", tags: [], body: "b", related: [], exchange: []), now: now))
+        XCTAssertEqual(try! Data(contentsOf: vault.index), Data([0xFF, 0xFE, 0xFD]))
+
+        XCTAssertEqual(MemoryVault.tagSafe("10:00会議"), "1000会議")
+        XCTAssertEqual(MemoryVault.tagSafe("{旅行}/京都"), "旅行/京都")
+        XCTAssertEqual(MemoryVault.tagSafe("2026"), "")
         XCTAssertEqual(MemoryVault.fileSafe("a/b:c?[[d]]#e"), "a b c d e")
         XCTAssertEqual(MemoryVault.fileSafe("  "), "メモ")
         let parsed = MemoryNote.parse("前置き {\"title\":\"題\",\"summary\":\"\",\"tags\":[\"a\",\"b\",\"c\",\"d\",\"e\"],\"body\":\"本文\",\"related\":[]} 後書き", exchange: [])

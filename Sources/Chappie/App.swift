@@ -158,8 +158,8 @@ struct CompanionView: View {
                             Button("商品・noteを登録") { connections = true }
                             Button("記憶フォルダを開く") {
                                 let vault = MemoryVault.standard
-                                try? vault.prepare()
-                                NSWorkspace.shared.open(vault.root)
+                                do { try vault.prepare(); NSWorkspace.shared.open(vault.root) }
+                                catch { model.answer = "記憶フォルダを作れませんでした: \(error.localizedDescription)" }
                             }
                             Text("Amazon購入：専用ブラウザで都度価格確認 / 売上サービス：未接続").font(.system(size: 11)).foregroundStyle(.secondary)
                         }.padding(10).background(Color.white.opacity(0.8), in: RoundedRectangle(cornerRadius: 12))

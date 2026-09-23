@@ -33,7 +33,7 @@ struct MemoryVault {
     - ログ/：ノート本体。1件1ファイル。「## 関連」に関係するノートへのリンクがある。
 
     ## 答えるとき
-    1. 質問がユーザー自身の考え・好み・過去の相談・決めたこと・進めていることに関わりそうなら、まず 索引.md を読み、関係するノートだけを開く。全部は読まない。
+    1. 質問がユーザー自身の考え・好み・過去の相談・決めたこと・進めていることに関わりそうなら、まず 索引.md を読み、関係するノートだけを開く。全部は読まない。索引に見当たらなければ、ユーザーが自分で書いたノート（索引に無い、ログ/ の外にある）もあるので、フォルダ全体をキーワードで検索する。
     2. 開いたノートの「## 関連」のリンクをたどり、検索では出てこない関係する話も拾う。
     3. ノートにあるユーザーの考え・好み・判断・過去の結果を踏まえて答える。使ったときは「前に〜と話していましたね」と一言触れる。
     4. ノートは書いた時点の情報。日付を見て、今と違いそうなら確認する。関係するノートが無ければ、無理に使わない。
@@ -43,6 +43,17 @@ struct MemoryVault {
     - このフォルダのファイルを作ったり書き換えたりしない。保存はチャッピー本体が、ユーザーに頼まれたときだけ行う。
 
     """
+
+    /// Tool arguments for a Claude child. With the notes readable, pages must not be fetched: a page's hidden
+    /// instructions could put the notes in a URL. Web search (results only) stays.
+    static func claudeWebTools(readingNotes: Bool) -> [String] {
+        readingNotes ? ["--allowedTools", "WebSearch", "--disallowedTools", "WebFetch"] : ["--allowedTools", "WebSearch,WebFetch"]
+    }
+
+    /// Codex's web search can open pages as well as search, so it is turned off while the notes are in the prompt.
+    static func codexWebSearch(readingNotes: Bool) -> String {
+        readingNotes ? "web_search=\"disabled\"" : "web_search=\"live\""
+    }
 
     /// Creates the folder, rules and index on first use. Existing files are left alone so the user can edit them.
     func prepare() throws {
@@ -78,14 +89,18 @@ struct MemoryVault {
         let base = "\(day.string(from: now)) \(Self.fileSafe(note.title))"
         var name = base
         var copy = 2
-        while existing.contains(name) { name = "\(base) (\(copy))"; copy += 1 }
+        // Ask the file system, not the name list: APFS treats "iPhone" and "IPhone" as the same file.
+        while FileManager.default.fileExists(atPath: logs.appendingPathComponent(name + ".md").path) { name = "\(base) (\(copy))"; copy += 1 }
+        // prepare() made sure the index exists; if it cannot be read, stop before writing anything rather than overwrite it.
+        var indexText = try String(contentsOf: index, encoding: .utf8)
         try note.markdown(related: Array(related), now: now)
             .write(to: logs.appendingPathComponent(name + ".md"), atomically: true, encoding: .utf8)
 
         let tags = note.tags.map(Self.tagSafe).filter { !$0.isEmpty }.map { " #\($0)" }.joined()
         let entry = "- [[\(name)]] — \(Self.oneLine(note.summary))\(tags)"
-        var indexText = (try? String(contentsOf: index, encoding: .utf8)) ?? Self.indexHeader
-        if let first = indexText.range(of: "\n- [[") {
+        if indexText.hasPrefix("- [[") {
+            indexText.insert(contentsOf: entry + "\n", at: indexText.startIndex)
+        } else if let first = indexText.range(of: "\n- [[") {
             indexText.insert(contentsOf: "\n" + entry, at: first.lowerBound)
         } else {
             if !indexText.hasSuffix("\n") { indexText += "\n" }
@@ -93,8 +108,9 @@ struct MemoryVault {
         }
         try indexText.write(to: index, atomically: true, encoding: .utf8)
 
-        for other in related { try link(other, to: name) }
-        return (name, Array(related))
+        // The note and index are saved; a related note that cannot be updated only loses its backlink.
+        let linked = related.filter { (try? link($0, to: name)) != nil }
+        return (name, linked)
     }
 
     /// Adds "- [[name]]" under the note's 関連 heading, creating the heading if it is missing.
@@ -103,7 +119,8 @@ struct MemoryVault {
         var text = try String(contentsOf: url, encoding: .utf8)
         guard !text.contains("[[\(name)]]") else { return }
         if !text.hasSuffix("\n") { text += "\n" }
-        if let heading = text.range(of: "\n## 関連\n") {
+        // Chappie writes 関連 last, so the last such heading is its own even if the body has one too.
+        if let heading = text.range(of: "\n## 関連\n", options: .backwards) {
             // The section runs to the next heading; the new link goes right after its last line.
             let next = text.range(of: "\n## ", range: heading.upperBound..<text.endIndex)?.lowerBound ?? text.endIndex
             var section = String(text[heading.upperBound..<next])
@@ -134,8 +151,10 @@ struct MemoryVault {
         return cleaned.isEmpty ? "メモ" : String(cleaned.prefix(40)).trimmingCharacters(in: .whitespaces)
     }
 
+    /// Obsidian tags take letters, digits, "_", "-" and "/", and need more than digits.
     static func tagSafe(_ tag: String) -> String {
-        tag.replacingOccurrences(of: #"[\s#,、。\[\]"'「」]"#, with: "", options: .regularExpression)
+        let cleaned = tag.replacingOccurrences(of: #"[^\p{L}\p{N}_\-/]"#, with: "", options: .regularExpression)
+        return cleaned.allSatisfy(\.isNumber) ? "" : cleaned
     }
 
     static func oneLine(_ text: String) -> String {
@@ -145,6 +164,8 @@ struct MemoryVault {
 
 struct MemoryNote: Equatable {
     struct Line: Equatable { var role: String; var text: String }
+    /// Conversation role for reminder announcements, which answer nothing and are never saved as the last reply.
+    static let reminderRole = "チャッピー（リマインド）"
     var title: String
     var summary: String
     var tags: [String]
@@ -170,6 +191,19 @@ struct MemoryNote: Equatable {
         let summary = draft.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return MemoryNote(title: title, summary: summary.isEmpty ? title : summary, tags: Array((draft.tags ?? []).prefix(4)),
                           body: body, related: draft.related ?? [], exchange: exchange)
+    }
+
+    /// What "今のを保存して" keeps: the last reply and the request it answered, skipping replies to
+    /// earlier save requests ("保存する会話がまだありません", "保存しました"). Nil when nothing was answered yet.
+    static func lastExchange(in history: [Line]) -> [Line]? {
+        func isSaveRequest(_ text: String) -> Bool { Intent.saveRequest(WakePhrase.command(in: text) ?? text) != nil }
+        let answered = history.indices.reversed().first { index in
+            guard history[index].role == "チャッピー" else { return false }
+            return !isSaveRequest(history[..<index].last { $0.role == "ユーザー" }?.text ?? "")
+        }
+        guard let replyIndex = answered else { return nil }
+        let questionIndex = history[..<replyIndex].lastIndex { $0.role == "ユーザー" } ?? replyIndex
+        return Array(history[questionIndex...replyIndex])
     }
 
     /// Used when no AI can summarise: the exchange itself, titled by the user's words.

@@ -622,6 +622,20 @@ enum Intent {
         return .memo(memo)
     }
 
+    /// Words that point back at something the user said. Bare "前に" / "私の" / "メモ" are left out:
+    /// "出発の前に" or "私のPCが遅い" are web questions and should keep page fetching.
+    private static let memoryWords = [
+        "前に話", "前に決め", "前に言", "前に相談", "前に考え", "前にメモ", "前に保存", "この前", "このまえ", "こないだ", "前回",
+        "たっけ", "だっけ", "決めた", "決めてた", "話した", "話してた", "言ってた", "相談した", "考えてた", "覚えてる", "覚えている",
+        "記憶に", "記憶から", "メモした", "メモしてた", "メモってた", "保存した", "記録した", "好み"
+    ]
+
+    /// "京都の宿、前にどうするって決めたっけ？" points at the user's saved notes. Only these questions
+    /// read the memory folder, and they get no page fetching, so a web page cannot carry the notes away.
+    static func isMemoryQuestion(_ text: String) -> Bool {
+        memoryWords.contains(where: text.contains)
+    }
+
     // MARK: Sales / settings
 
     static func isSalesQuestion(_ text: String) -> Bool {

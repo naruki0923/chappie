@@ -654,24 +654,6 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             writeMemory(.verbatim(exchange), to: vault, lead: "Claude Code CLIが無いので要約せず、やり取りをそのまま"); return
         }
         busy = true; voice.suppressed = true; answer = "ノートにまとめています…"
-        let id = UUID(); runID = id
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("chappie-\(id.uuidString)")
-        let output = folder.appendingPathComponent("note.txt")
-        do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        catch { reply(error.localizedDescription); return }
-        let mcpConfig = folder.appendingPathComponent("mcp.json")
-        try? Data("{\"mcpServers\":{}}".utf8).write(to: mcpConfig)
-        FileManager.default.createFile(atPath: output.path, contents: nil)
-        let handle = try? FileHandle(forWritingTo: output)
-        let job = Process(); process = job
-        // Inside the folder the child can read the index and notes; writing and anything outside are denied.
-        job.currentDirectoryURL = vault.root
-        job.executableURL = URL(fileURLWithPath: binary)
-        job.arguments = ["-p", "--no-session-persistence", "--permission-mode", "dontAsk",
-                         "--strict-mcp-config", "--mcp-config", mcpConfig.path, "--allowedTools", ""]
-        job.standardOutput = handle ?? FileHandle.nullDevice
-        job.standardError = FileHandle.nullDevice
-        let stdin = Pipe(); job.standardInput = stdin
         let prompt = """
         あなたは秘書アシスタント「チャッピー」の記録係です。ユーザーが保存を頼んだ内容を、あとで読み返して役に立つノートにまとめ、JSONだけを出力してください。説明文やコードフェンスは不要です。
         作業フォルダはユーザーの記憶です。索引.md を読み、今回の内容と関係の深い既存ノートがあれば選びます（最大5件。無ければ空）。ファイルは作ったり書き換えたりしません。
@@ -684,32 +666,17 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         今日: \(Date().formatted(date: .complete, time: .omitted))
         \(material)
         """
-        job.terminationHandler = { [weak self] process in
-            try? handle?.close()
-            let result = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
-            try? FileManager.default.removeItem(at: folder)
-            Task { @MainActor in
-                guard let self, self.runID == id else { return }
-                self.runTimeout?.cancel(); self.process = nil
-                if process.terminationStatus == 0, let note = MemoryNote.parse(result, exchange: exchange) {
-                    self.writeMemory(note, to: vault)
-                } else {
-                    self.writeMemory(.verbatim(exchange), to: vault, lead: "要約できなかったので、やり取りをそのまま")
-                }
+        // Inside the folder the child can read the index and notes; writing and anything outside are denied.
+        runChild(binary: binary,
+                 arguments: { folder, _ in Self.claudeArguments + Self.noMCPArguments(in: folder) + ["--allowedTools", ""] },
+                 cwd: vault.root, prompt: prompt, timeout: 120,
+                 onTimeout: { self.writeMemory(.verbatim(exchange), to: vault, lead: "要約が時間切れになったので、やり取りをそのまま") },
+                 onStartFailure: { _ in self.writeMemory(.verbatim(exchange), to: vault, lead: "要約を始められなかったので、やり取りをそのまま") }) { status, result in
+            if status == 0, let note = MemoryNote.parse(result, exchange: exchange) {
+                self.writeMemory(note, to: vault)
+            } else {
+                self.writeMemory(.verbatim(exchange), to: vault, lead: "要約できなかったので、やり取りをそのまま")
             }
-        }
-        do {
-            try job.run()
-            stdin.fileHandleForWriting.write(Data(prompt.utf8)); try? stdin.fileHandleForWriting.close()
-            runTimeout = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 120_000_000_000)
-                guard !Task.isCancelled, let self, self.runID == id else { return }
-                self.cancel()
-                self.writeMemory(.verbatim(exchange), to: vault, lead: "要約が時間切れになったので、やり取りをそのまま")
-            }
-        } catch {
-            try? FileManager.default.removeItem(at: folder); process = nil
-            writeMemory(.verbatim(exchange), to: vault, lead: "要約を始められなかったので、やり取りをそのまま")
         }
     }
 
@@ -735,23 +702,6 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
             reply("予約の段取りにはログイン済みのClaude Code CLIが必要です。"); return
         }
         busy = true; voice.suppressed = true; answer = "予約の条件を整理しています…"
-        let id = UUID(); runID = id
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("chappie-\(id.uuidString)")
-        let output = folder.appendingPathComponent("plan.txt")
-        do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        catch { reply(error.localizedDescription); return }
-        let mcpConfig = folder.appendingPathComponent("mcp.json")
-        try? Data("{\"mcpServers\":{}}".utf8).write(to: mcpConfig)
-        FileManager.default.createFile(atPath: output.path, contents: nil)
-        let handle = try? FileHandle(forWritingTo: output)
-        let job = Process(); process = job
-        job.currentDirectoryURL = folder
-        job.executableURL = URL(fileURLWithPath: binary)
-        job.arguments = ["-p", "--no-session-persistence", "--permission-mode", "dontAsk",
-                         "--strict-mcp-config", "--mcp-config", mcpConfig.path, "--allowedTools", ""]
-        job.standardOutput = handle ?? FileHandle.nullDevice
-        job.standardError = FileHandle.nullDevice
-        let stdin = Pipe(); job.standardInput = stdin
         let recentConversation = conversation.suffix(10).map { "\($0.role): \($0.text)" }.joined(separator: "\n")
         let formatter = DateFormatter(); formatter.dateFormat = "yyyy-MM-dd (EEEE)"; formatter.locale = Locale(identifier: "ja_JP")
         let prompt = """
@@ -767,28 +717,16 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         依頼:
         \(text)
         """
-        job.terminationHandler = { [weak self] process in
-            try? handle?.close()
-            let result = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
-            try? FileManager.default.removeItem(at: folder)
-            Task { @MainActor in
-                guard let self, self.runID == id else { return }
-                self.runTimeout?.cancel(); self.process = nil
-                guard process.terminationStatus == 0, let plan = BookingPlan.parse(result) else {
-                    self.reply("予約の条件を読み取れませんでした。「20日の東京から新大阪の新幹線を取って」のように、行き先と日付を教えてください。"); return
-                }
-                self.openBooking(plan)
+        runChild(binary: binary,
+                 arguments: { folder, _ in Self.claudeArguments + Self.noMCPArguments(in: folder) + ["--allowedTools", ""] },
+                 prompt: prompt, timeout: 120,
+                 onTimeout: { self.answer = "予約条件の整理がタイムアウトしました。もう一度お願いします。" },
+                 onStartFailure: { self.reply("予約の段取りを開始できませんでした: \($0.localizedDescription)") }) { status, result in
+            guard status == 0, let plan = BookingPlan.parse(result) else {
+                self.reply("予約の条件を読み取れませんでした。「20日の東京から新大阪の新幹線を取って」のように、行き先と日付を教えてください。"); return
             }
+            self.openBooking(plan)
         }
-        do {
-            try job.run()
-            stdin.fileHandleForWriting.write(Data(prompt.utf8)); try? stdin.fileHandleForWriting.close()
-            runTimeout = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 120_000_000_000)
-                guard !Task.isCancelled, let self, self.runID == id else { return }
-                self.cancel(); self.answer = "予約条件の整理がタイムアウトしました。もう一度お願いします。"
-            }
-        } catch { try? FileManager.default.removeItem(at: folder); process = nil; reply("予約の段取りを開始できませんでした: \(error.localizedDescription)") }
     }
 
     private func openBooking(_ plan: BookingPlan) {
@@ -814,54 +752,44 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         if mail != nil, case .codex = backend { reply("Gmailの確認・下書きにはログイン済みのClaude Code CLIが必要です。"); return }
         busy = true; voice.suppressed = true
         answer = mail == .summary ? "メールを確認しています…" : mail == .draft ? "下書きを作っています…" : "調べています…"
-        let id = UUID(); runID = id
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("chappie-\(id.uuidString)")
-        let output = folder.appendingPathComponent("answer.txt")
-        do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        catch { reply(error.localizedDescription); return }
-        let job = Process(); process = job
-        job.currentDirectoryURL = folder
         // Questions about what the user said or decided are answered from inside the memory folder,
         // so the child reads the saved notes (and the folder's CLAUDE.md) first. Mail requests stay outside it.
         let vault = MemoryVault.standard
         let memoryReady = mail == nil && Intent.isMemoryQuestion(text) && (try? vault.prepare()) != nil
         // Codex cannot open the folder, so it only sees the index; with no notes there is nothing to protect.
         let codexIndex = memoryReady ? vault.indexExcerpt() : ""
-        let claudeOutput: FileHandle?
+        let binary: String
+        let arguments: (_ folder: URL, _ output: URL) -> [String]
+        var cwd: URL?
+        let captureStdout: Bool
         switch backend {
-        case .claude(let binary):
-            job.executableURL = URL(fileURLWithPath: binary)
+        case .claude(let claude):
+            binary = claude
             // The user's claude.ai connectors (Google Calendar, Gmail, Notion…) must stay out of
             // general questions: the calendar is Apple's, handled by Chappie itself.
             // Mail requests are the one exception: the claude.ai Gmail connector is exposed, read/draft only.
-            var arguments = ["-p", "--no-session-persistence", "--permission-mode", "dontAsk"]
-            switch mail {
-            case nil:
-                let mcpConfig = folder.appendingPathComponent("mcp.json")
-                try? Data("{\"mcpServers\":{}}".utf8).write(to: mcpConfig)
-                arguments += ["--strict-mcp-config", "--mcp-config", mcpConfig.path]
-                // Reading is allowed only inside the working directory; writes and outside paths are denied in dontAsk mode.
-                if memoryReady { job.currentDirectoryURL = vault.root }
-                arguments += MemoryVault.claudeWebTools(readingNotes: memoryReady)
-            case .summary?:
-                arguments += ["--allowedTools", Self.gmailReadTools.joined(separator: ","),
-                              "--disallowedTools", (Self.gmailForbiddenTools + Self.gmailDraftTools).joined(separator: ",")]
-            case .draft?:
-                arguments += ["--allowedTools", (Self.gmailReadTools + Self.gmailDraftTools).joined(separator: ","),
-                              "--disallowedTools", Self.gmailForbiddenTools.joined(separator: ",")]
+            arguments = { folder, _ in
+                switch mail {
+                case nil:
+                    return Self.claudeArguments + Self.noMCPArguments(in: folder) + MemoryVault.claudeWebTools(readingNotes: memoryReady)
+                case .summary?:
+                    return Self.claudeArguments + ["--allowedTools", Self.gmailReadTools.joined(separator: ","),
+                                                   "--disallowedTools", (Self.gmailForbiddenTools + Self.gmailDraftTools).joined(separator: ",")]
+                case .draft?:
+                    return Self.claudeArguments + ["--allowedTools", (Self.gmailReadTools + Self.gmailDraftTools).joined(separator: ","),
+                                                   "--disallowedTools", Self.gmailForbiddenTools.joined(separator: ",")]
+                }
             }
-            job.arguments = arguments
-            FileManager.default.createFile(atPath: output.path, contents: nil)
-            claudeOutput = try? FileHandle(forWritingTo: output)
-            job.standardOutput = claudeOutput ?? FileHandle.nullDevice
-        case .codex(let binary):
-            job.executableURL = URL(fileURLWithPath: binary)
-            job.arguments = ["exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "-c", "approval_policy=\"never\"", "-c", MemoryVault.codexWebSearch(readingNotes: !codexIndex.isEmpty), "-c", "features.shell_tool=false", "-c", "features.apps=false", "--output-last-message", output.path, "-"]
-            claudeOutput = nil
-            job.standardOutput = FileHandle.nullDevice
+            // Reading is allowed only inside the working directory; writes and outside paths are denied in dontAsk mode.
+            if mail == nil, memoryReady { cwd = vault.root }
+            captureStdout = true
+        case .codex(let codex):
+            binary = codex
+            arguments = { _, output in
+                ["exec", "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "-c", "approval_policy=\"never\"", "-c", MemoryVault.codexWebSearch(readingNotes: !codexIndex.isEmpty), "-c", "features.shell_tool=false", "-c", "features.apps=false", "--output-last-message", output.path, "-"]
+            }
+            captureStdout = false
         }
-        let stdin = Pipe(); job.standardInput = stdin
-        job.standardError = FileHandle.nullDevice
         let recentConversation = conversation.suffix(10).map { "\($0.role): \($0.text)" }.joined(separator: "\n")
         let appState = chappieSettingsSummary()
         let mailInstructions: String
@@ -912,25 +840,76 @@ final class Assistant: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
         依頼:
         \(text)
         """
+        runChild(binary: binary, arguments: arguments, cwd: cwd, captureStdout: captureStdout, prompt: prompt, timeout: 180,
+                 onTimeout: { self.answer = "応答がタイムアウトしました。質問を短くして再試行してください。" },
+                 onStartFailure: { self.reply("会話を開始できませんでした: \($0.localizedDescription)") }) { status, result in
+            if status == 0 && !result.isEmpty { self.reply(result) }
+            else { self.reply("会話への接続に失敗しました。\(backend.name)のログイン状態・利用枠・ネット接続を確認してください。") }
+        }
+    }
+
+    // MARK: Child CLI
+
+    /// Print mode, nothing kept between runs, and anything not in --allowedTools denied instead of asked.
+    private static let claudeArguments = ["-p", "--no-session-persistence", "--permission-mode", "dontAsk"]
+
+    /// Shuts out every MCP server, the user's claude.ai connectors included, by pointing at an empty config written into the run's folder.
+    private static func noMCPArguments(in folder: URL) -> [String] {
+        let mcpConfig = folder.appendingPathComponent("mcp.json")
+        try? Data("{\"mcpServers\":{}}".utf8).write(to: mcpConfig)
+        return ["--strict-mcp-config", "--mcp-config", mcpConfig.path]
+    }
+
+    /// Runs a child CLI once with `prompt` on stdin, in a temp folder of its own (also the working
+    /// directory unless `cwd` is given) that is removed afterwards. `arguments` gets that folder and
+    /// the output file; the child's stdout goes to the output file unless `captureStdout` is false,
+    /// in which case the child writes the file itself. `completion` gets the exit status and the output.
+    /// After `timeout` seconds the run is cancelled and `onTimeout` runs. Once cancel() or a newer run
+    /// has changed runID, neither callback runs.
+    private func runChild(binary: String, arguments: (_ folder: URL, _ output: URL) -> [String], cwd: URL? = nil,
+                          captureStdout: Bool = true, prompt: String, timeout: UInt64,
+                          onTimeout: @escaping () -> Void, onStartFailure: (Error) -> Void,
+                          completion: @escaping (_ status: Int32, _ output: String) -> Void) {
+        let id = UUID(); runID = id
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("chappie-\(id.uuidString)")
+        let output = folder.appendingPathComponent("output.txt")
+        do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        catch { reply(error.localizedDescription); return }
+        let job = Process(); process = job
+        job.currentDirectoryURL = cwd ?? folder
+        job.executableURL = URL(fileURLWithPath: binary)
+        job.arguments = arguments(folder, output)
+        let handle: FileHandle?
+        if captureStdout {
+            FileManager.default.createFile(atPath: output.path, contents: nil)
+            handle = try? FileHandle(forWritingTo: output)
+        } else {
+            handle = nil
+        }
+        job.standardOutput = handle ?? FileHandle.nullDevice
+        job.standardError = FileHandle.nullDevice
+        let stdin = Pipe(); job.standardInput = stdin
         job.terminationHandler = { [weak self] process in
-            try? claudeOutput?.close()
+            try? handle?.close()
             let result = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
             try? FileManager.default.removeItem(at: folder)
             Task { @MainActor in
                 guard let self, self.runID == id else { return }
                 self.runTimeout?.cancel(); self.process = nil
-                if process.terminationStatus == 0 && !result.isEmpty { self.reply(result) }
-                else { self.reply("会話への接続に失敗しました。\(backend.name)のログイン状態・利用枠・ネット接続を確認してください。") }
+                completion(process.terminationStatus, result)
             }
         }
         do {
             try job.run()
             stdin.fileHandleForWriting.write(Data(prompt.utf8)); try? stdin.fileHandleForWriting.close()
             runTimeout = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 180_000_000_000)
+                try? await Task.sleep(nanoseconds: timeout * 1_000_000_000)
                 guard !Task.isCancelled, let self, self.runID == id else { return }
-                self.cancel(); self.answer = "応答がタイムアウトしました。質問を短くして再試行してください。"
+                self.cancel(); onTimeout()
             }
-        } catch { try? FileManager.default.removeItem(at: folder); process = nil; reply("会話を開始できませんでした: \(error.localizedDescription)") }
+        } catch {
+            try? handle?.close(); try? FileManager.default.removeItem(at: folder); process = nil
+            onStartFailure(error)
+        }
     }
 }

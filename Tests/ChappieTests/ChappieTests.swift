@@ -29,7 +29,9 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         tests.testOrderStatus()
         tests.testGarbageCalendar()
         tests.testGarbageQuestions()
-        print("PASS: wake phrase, recognition backoff, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking, order status, garbage calendar")
+        tests.testSaveRequests()
+        tests.testMemoryVault()
+        print("PASS: wake phrase, recognition backoff, utterance extraction, purchase matching, limits, duplicate protection, URL validation, intent routing, confirmation answers, event drafts, chat registration, reminders, calendar edits, mail, booking, order status, garbage calendar, memory")
     }
     func testVoiceLogExcerpt() {
         XCTAssertEqual(VoiceLog.excerpt("チャッピー"), "チャッピー")
@@ -583,5 +585,81 @@ func XCTAssertFalse(_ value: Bool, line: UInt = #line) { precondition(!value, "l
         XCTAssertTrue(nonBurnable.contains("次の金物・ガラス類は10/1(木)、10日後です。"))
         XCTAssertTrue(nonBurnable.contains("次の埋立ごみは9/23(水)、明後日です。"))
         XCTAssertTrue(nonBurnable.contains("次の水銀ごみは12/9(水)、79日後です。"))
+    }
+
+    func testSaveRequests() {
+        XCTAssertEqual(Intent.saveRequest("保存して"), .lastExchange)
+        XCTAssertEqual(Intent.saveRequest("今のを保存して"), .lastExchange)
+        XCTAssertEqual(Intent.saveRequest("さっきの話、記録しといて。"), .lastExchange)
+        XCTAssertEqual(Intent.saveRequest("今の案を覚えといて"), .lastExchange)
+        XCTAssertEqual(Intent.saveRequest("それメモしてください"), .lastExchange)
+        XCTAssertEqual(Intent.saveRequest("今日の話をノートに残して"), .lastExchange)
+        XCTAssertEqual(Intent.saveRequest("コーヒーはブラック派ってメモして"), .memo("コーヒーはブラック派"))
+        XCTAssertEqual(Intent.saveRequest("来月から朝は走ることにしたと記録して"), .memo("来月から朝は走ることにした"))
+        XCTAssertEqual(Intent.saveRequest("新しい企画の締切は10月末をメモして"), .memo("新しい企画の締切は10月末"))
+        // "覚えといて" with content is a reminder that still needs a time, not a memo.
+        XCTAssertNil(Intent.saveRequest("歯医者って覚えといて"))
+        XCTAssertNotNil(Intent.reminderDraft(from: "明日9時に歯医者って覚えといて"))
+        XCTAssertNil(Intent.saveRequest("明日9時に歯医者って覚えといて"))
+        XCTAssertNil(Intent.saveRequest("この画像を保存して"))
+        XCTAssertNil(Intent.saveRequest("予定を保存して"))
+        XCTAssertNil(Intent.saveRequest("保存しないで"))
+        XCTAssertNil(Intent.saveRequest("保存の仕方を教えて"))
+        XCTAssertNil(Intent.saveRequest("今日の予定"))
+    }
+
+    func testMemoryVault() {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("chappie-memory-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let vault = MemoryVault(root: root)
+        var parts = DateComponents(); parts.year = 2026; parts.month = 9; parts.day = 23; parts.hour = 14; parts.minute = 5
+        let now = Calendar.current.date(from: parts)!
+        let exchange = [MemoryNote.Line(role: "ユーザー", text: "京都旅行の案を出して"), MemoryNote.Line(role: "チャッピー", text: "案1：嵐山\n案2：伏見")]
+
+        let first = try! vault.save(MemoryNote(title: "京都旅行の案", summary: "嵐山と伏見を比較", tags: ["旅行", "京 都"], body: "- 嵐山が第一候補",
+                                               related: ["存在しないノート"], exchange: exchange), now: now)
+        XCTAssertEqual(first.name, "2026-09-23 京都旅行の案")
+        XCTAssertEqual(first.linked, [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: vault.rules.path))
+        let note = try! String(contentsOf: vault.logs.appendingPathComponent(first.name + ".md"), encoding: .utf8)
+        XCTAssertTrue(note.hasPrefix("---\ndate: 2026-09-23 14:05\ntags: [旅行, 京都]\nsummary: \"嵐山と伏見を比較\"\n"))
+        XCTAssertTrue(note.contains("# 京都旅行の案\n\n- 嵐山が第一候補\n"))
+        XCTAssertTrue(note.contains("> **チャッピー**：案1：嵐山\n> 案2：伏見\n"))
+        XCTAssertTrue(note.hasSuffix("## 関連\n"))
+
+        // The same title on the same day gets its own file; related names in any link form resolve to existing notes.
+        let second = try! vault.save(MemoryNote(title: "京都旅行の案", summary: "宿は町家に決定", tags: [], body: "- 町家",
+                                                related: ["[[2026-09-23 京都旅行の案]]", "ログ/2026-09-23 京都旅行の案.md"], exchange: []), now: now)
+        XCTAssertEqual(second.name, "2026-09-23 京都旅行の案 (2)")
+        XCTAssertEqual(second.linked, ["2026-09-23 京都旅行の案"])
+        let backlinked = try! String(contentsOf: vault.logs.appendingPathComponent(first.name + ".md"), encoding: .utf8)
+        XCTAssertTrue(backlinked.hasSuffix("## 関連\n- [[2026-09-23 京都旅行の案 (2)]]\n"))
+        let secondNote = try! String(contentsOf: vault.logs.appendingPathComponent(second.name + ".md"), encoding: .utf8)
+        XCTAssertTrue(secondNote.hasSuffix("## 関連\n- [[2026-09-23 京都旅行の案]]\n"))
+        XCTAssertFalse(secondNote.contains("## やり取り"))
+
+        // Newest first in the index.
+        let index = try! String(contentsOf: vault.index, encoding: .utf8)
+        XCTAssertTrue(index.contains("- [[2026-09-23 京都旅行の案 (2)]] — 宿は町家に決定\n- [[2026-09-23 京都旅行の案]] — 嵐山と伏見を比較 #旅行 #京都\n"))
+        XCTAssertEqual(vault.indexExcerpt(), "- [[2026-09-23 京都旅行の案 (2)]] — 宿は町家に決定\n- [[2026-09-23 京都旅行の案]] — 嵐山と伏見を比較 #旅行 #京都\n")
+
+        // A backlink goes under 関連 even when the user added a section after it.
+        let edited = vault.logs.appendingPathComponent("手書き.md")
+        try! "# 手書き\n\n## 関連\n- [[x]]\n\n## メモ\n自分で書いた\n".write(to: edited, atomically: true, encoding: .utf8)
+        _ = try! vault.save(MemoryNote(title: "続き", summary: "続き", tags: [], body: "b", related: ["手書き"], exchange: []), now: now)
+        XCTAssertEqual(try! String(contentsOf: edited, encoding: .utf8), "# 手書き\n\n## 関連\n- [[x]]\n- [[2026-09-23 続き]]\n\n## メモ\n自分で書いた\n")
+
+        // Rules the user edited are kept.
+        try! "自分のルール".write(to: vault.rules, atomically: true, encoding: .utf8)
+        try! vault.prepare()
+        XCTAssertEqual(try! String(contentsOf: vault.rules, encoding: .utf8), "自分のルール")
+
+        XCTAssertEqual(MemoryVault.fileSafe("a/b:c?[[d]]#e"), "a b c d e")
+        XCTAssertEqual(MemoryVault.fileSafe("  "), "メモ")
+        let parsed = MemoryNote.parse("前置き {\"title\":\"題\",\"summary\":\"\",\"tags\":[\"a\",\"b\",\"c\",\"d\",\"e\"],\"body\":\"本文\",\"related\":[]} 後書き", exchange: [])
+        XCTAssertEqual(parsed?.summary, "題")
+        XCTAssertEqual(parsed?.tags.count, 4)
+        XCTAssertNil(MemoryNote.parse("{\"title\":\"題\",\"body\":\"\"}", exchange: []))
+        XCTAssertEqual(MemoryNote.verbatim(exchange).title, "京都旅行の案を出して")
     }
 }

@@ -50,6 +50,11 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
 - リマインド（`Intent.reminderDraft`）：「リマインド／リマインダー／覚えといて／知らせて」などの語と日時。相対時間「30分後」「あと10分」はMac内で計算、絶対時刻（「9月23日」「金曜」）はNSDataDetector。「23日」のような日付を相対の「日」と取り違えない。月なしの「23日(の9時半)に」はNSDataDetectorが拾わないので `Intent.dayOfMonth` で「次のその日」（今月、過ぎていれば来月）として解釈し、detectorが時刻だけ拾ったときは日付と合成する。時刻なしは9:00。時間が無い依頼は `Intent.isReminderAddition` で拾って聞き返し、「リマインドを消して／変えて」は `Intent.isReminderEdit` で拾って未対応と案内する（どちらもAIに回さない。「ホテルをキャンセルしてってリマインドして」は通常のリマインド）。`Assistant.addReminder`がUserDefaults（`chappieReminders`）に保存し、20秒ごとの`startReminderClock`で期限到来を読み上げ。同時にEKReminder（アラーム付き）を既定リストへ保存してiPhone/Watchに届ける。1時間以上前に過ぎたものは読み上げない
 - 一般質問の子プロセスは `--strict-mcp-config --mcp-config {空}` でユーザーのclaude.aiコネクター（Google Calendar・Gmail等）を隠す。予定・リマインドはApple製アプリのみ、と本文プロンプトにも明記
 - ごみの収集日（`Intent.garbageQuestion` → `GarbageCalendar.shimizu2026.answer`）：松山市 清水地区「2026年度 ごみカレンダー」PDFの収集日を `GarbageCalendar.swift` に月ごとの「日＋記号」で書き写した（可 プ 紙 金 ペ 埋 水、休＝収集なし）。「今日/明日/明後日/今週/来週/○曜/10月7日 のゴミ」は `.days`、「ペットボトルはいつ」「蛍光灯は何ゴミ」のように種類や品目を挙げたら `.next(kind, item:)` で直近2回の収集日と出し方（時刻・袋）を返す。品目→種類の対応は `GarbageKind.aliases`。「粗大」は `.bulky`（申込制・区分C/Dの申込期間を両方答える）、「不燃・燃えない」は `.nonBurnable`（区分が無い旨と金物ガラス／埋立／水銀の次回日）、「充電式・モバイルバッテリー」は `.rechargeableBattery`（リサイクルBOX案内）、「年末年始」は12/28〜1/8の一覧。今日の締切時刻を過ぎていたらその旨と次回を添える。「ゴミ袋買って／欲しい」は購入、「缶ビールいつ届く」は注文状況、「ゴミ出しを入れて／消して／ずらして」は予定操作に譲る。カレンダー範囲外（2027年4月以降）は「分からない」と答え、曜日ルールから推測しない。年度が替わったら新しいPDFから `shimizu2026` と同じ形で書き写す
+- 記憶（`Intent.saveRequest` → `Assistant.saveMemory`、`Memory.swift`）：note記事「ジャービスをObsidianで作ってみた」の仕組み（ログを1か所に貯める・索引・関連リンク・AIが読んでから答える・保存は人間が決める）をチャッピーに移したもの。置き場所は `~/Documents/チャッピーの記憶`（`MemoryVault.standard`）で、`CLAUDE.md`（子Claude向けの読み方ルール）・`索引.md`（新しい順、1行＝1ノート）・`ログ/`（1件1ファイル、frontmatter＋本文＋やり取りの原文＋「## 関連」）。初回に作り、既存の `CLAUDE.md` や `索引.md` は上書きしない
+  - 保存は頼まれたときだけ（毎回「保存しますか？」とは聞かない、とユーザーが決めた）。「保存して／今のを記録しといて／それメモして」は直前の1往復（`.lastExchange`）、「〜ってメモして／〜と記録して／〜をメモして」はユーザーの言葉（`.memo`）。「〜って覚えといて」は時間の要るリマインドなのでメモにしない（`覚えといて` は `.lastExchange` の形だけ）
+  - 要約は子Claude（cwd＝記憶フォルダ、MCPなし、`--allowedTools ""`、dontAsk）がJSONで返し、ファイルの書き込み・索引の更新・関連ノートへの逆リンクはチャッピー本体がする。Claudeが無い・失敗・120秒で時間切れのときは、要約せずやり取りをそのまま保存する。続けて「保存して」と言われたら二重保存しない（`justSaved`、他の返事で解除）
+  - 一般の質問（メール以外）は子Claudeを記憶フォルダの中で動かす。dontAskでは作業フォルダ内の読み取りだけが通り、書き込み・フォルダ外の読み取り・シェルは拒否される（2026-09-23に実機で確認）。フォルダの `CLAUDE.md` が自動で読まれ、索引→ノート→リンク先の順に読む。Codexはファイルを読めないので索引（最大6000字）をプロンプトに入れる
+  - 記事後半の「自分から通知する（AWS・Slack）」は今回入れていない
 - 会話で商品を登録・変更・削除（`Intent.registrationRequest / ruleChange / isRemovalRequest`）。URLを含む文だけが登録扱いなので音声からは発生しない。既存の同名商品は更新し、酒類の手動レジ設定は引き継ぐ。設定画面にも削除ボタン
 
 ## 2026-09-12の実地確認
@@ -69,6 +74,7 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
 - `Sources/Chappie/Intent.swift`: 命令の振り分け判定（購入語、承認/中止、予定の読み取り/追加、日時解釈、ファイル検索語）。Foundationのみで単体テスト対象
 - `Sources/Chappie/Assistant.swift`: 振り分けの実行、会話、購入確認、予定の読み取り・追加、ファイル検索、調査
 - `Sources/Chappie/AmazonSession.swift`: Amazon専用画面、価格取得、レジ、注文確定、完了確認
+- `Sources/Chappie/Memory.swift`: 記憶フォルダ（ノートの書き出し、索引、双方向リンク、子Claude向けルール）。Foundationのみで単体テスト対象
 - `Sources/Chappie/GarbageCalendar.swift`: ごみの種類・出し方・清水地区2026年度の収集日データと回答文。Foundationのみで単体テスト対象
 - `Sources/Chappie/PurchaseRules.swift`: 商品登録、曖昧一致、購入上限、連続購入防止
 - `Sources/Chappie/Voice.swift`: ウェイクワードと音声認識状態
@@ -104,6 +110,8 @@ macOSで常時起動する、小型ロボット型の日本語音声アシスタ
 - 実地テストで注文確定する場合は、その都度ユーザーの具体的な許可を得る。
 
 ## 既知の注意点
+
+- `xcode-select` がCommandLineToolsを指していると、SwiftUIのマクロ（`@State`）が見つからず `./build.command` が失敗することがあります。その場合は `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./build.command` でビルドします（`./test.command` はSwiftUIを使わないのでそのまま通ります）。
 
 - 再ビルドするとアドホック署名が変わり、カレンダー許可が「未許可」に戻ることがあります。`tccutil reset Calendar local.chappie.companion` の後、実アプリで予定を聞くと許可ダイアログが出ます。
 

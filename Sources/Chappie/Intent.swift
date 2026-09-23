@@ -584,6 +584,44 @@ enum Intent {
             .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
     }
 
+    // MARK: Memory
+
+    enum SaveRequest: Equatable {
+        /// "今のを保存して" / "保存して": the conversation just before this request.
+        case lastExchange
+        /// "コーヒーはブラック派ってメモして": the user's own words.
+        case memo(String)
+    }
+
+    private static let saveVerbs = [
+        "保存しておいて", "保存しといて", "保存して", "記録しておいて", "記録しといて", "記録して",
+        "メモしておいて", "メモしといて", "メモっといて", "メモって", "メモして", "ノートに残して", "ノートに書いて",
+        "記憶しておいて", "記憶しといて", "記憶して", "残しておいて", "残しといて", "覚えておいて", "覚えといて"
+    ]
+
+    /// Saving happens only when asked. "覚えといて" saves the last exchange but never a quoted
+    /// memo, because "歯医者って覚えといて" is a reminder that still needs a time.
+    static func saveRequest(_ text: String) -> SaveRequest? {
+        var body = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"[。．.！!？?\s]+$"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(ください|くれる|くれ|お願いします|お願い|ね|よ)$"#, with: "", options: .regularExpression)
+        guard let verb = saveVerbs.first(where: { body.hasSuffix($0) }) else { return nil }
+        body = String(body.dropLast(verb.count)).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "、,")))
+        if body.range(of: #"^((今|いま|さっき|今日|きょう)の?|この|その|それ|これ)?(話|会話|内容|答え|回答|やりとり|やり取り|案|提案|件)?(を|も|は)?$"#, options: .regularExpression) != nil {
+            return .lastExchange
+        }
+        guard !verb.hasPrefix("覚え") else { return nil }
+        var content: String?
+        if let quote = body.range(of: #"\s*(って|と)$"#, options: .regularExpression) {
+            content = String(body[..<quote.lowerBound])
+        } else if verb.hasPrefix("メモ") || verb.hasPrefix("記録"), body.hasSuffix("を"),
+                  !["この", "その", "あの"].contains(where: body.hasPrefix) {
+            content = String(body.dropLast())
+        }
+        guard let memo = content?.trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: "、,「」『』"))), !memo.isEmpty else { return nil }
+        return .memo(memo)
+    }
+
     // MARK: Sales / settings
 
     static func isSalesQuestion(_ text: String) -> Bool {
